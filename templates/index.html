@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backhaul Monitor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f1923;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .header {
+            background: #1a2733;
+            border-bottom: 2px solid #2d4a5e;
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .header h1 { font-size: 20px; color: #4fc3f7; }
+        .header .subtitle { font-size: 13px; color: #78909c; }
+
+        .search-bar {
+            max-width: 800px;
+            margin: 32px auto 0;
+            padding: 0 24px;
+            position: relative;
+        }
+        .search-bar input {
+            width: 100%;
+            padding: 14px 20px;
+            font-size: 16px;
+            background: #1a2733;
+            border: 2px solid #2d4a5e;
+            border-radius: 8px;
+            color: #fff;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .search-bar input:focus { border-color: #4fc3f7; }
+        .search-bar input::placeholder { color: #546e7a; }
+        .search-results {
+            position: absolute;
+            top: 100%;
+            left: 24px;
+            right: 24px;
+            background: #1a2733;
+            border: 1px solid #2d4a5e;
+            border-radius: 0 0 8px 8px;
+            max-height: 300px;
+            overflow-y: auto;
+            display: none;
+            z-index: 10;
+        }
+        .search-results.active { display: block; }
+        .search-result-item {
+            padding: 10px 16px;
+            cursor: pointer;
+            border-bottom: 1px solid #1e3040;
+            font-family: monospace;
+            font-size: 14px;
+        }
+        .search-result-item:hover { background: #243442; }
+
+        .content { max-width: 1200px; margin: 24px auto; padding: 0 24px; }
+
+        .loading {
+            text-align: center;
+            padding: 60px;
+            color: #4fc3f7;
+            font-size: 16px;
+            display: none;
+        }
+        .loading.active { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+        .spinner {
+            width: 40px; height: 40px;
+            border: 4px solid #1e3040;
+            border-top: 4px solid #4fc3f7;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .results { display: none; }
+        .results.active { display: block; }
+
+        /* Verdict banner */
+        .verdict-banner {
+            padding: 20px 24px;
+            border-radius: 8px;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .verdict-banner.rain_fade { background: #1a3a4a; border-left: 4px solid #4fc3f7; }
+        .verdict-banner.off_target { background: #3a2a1a; border-left: 4px solid #ff9800; }
+        .verdict-banner.hardware_issue { background: #3a1a1a; border-left: 4px solid #f44336; }
+        .verdict-banner.normal { background: #1a3a1a; border-left: 4px solid #4caf50; }
+        .verdict-banner.insufficient_data { background: #2a2a2a; border-left: 4px solid #9e9e9e; }
+        .verdict-banner.alignment_issue { background: #3a2a1a; border-left: 4px solid #ff9800; }
+        .verdict-banner.interference { background: #3a1a3a; border-left: 4px solid #e040fb; }
+        .verdict-title { font-size: 22px; font-weight: 700; }
+        .verdict-confidence { font-size: 14px; color: #90a4ae; }
+
+        /* Cards */
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .card {
+            background: #1a2733;
+            border: 1px solid #2d4a5e;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .card h3 {
+            font-size: 14px;
+            text-transform: uppercase;
+            color: #4fc3f7;
+            margin-bottom: 12px;
+            letter-spacing: 0.5px;
+        }
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid #1e3040;
+            font-size: 14px;
+        }
+        .metric-row:last-child { border-bottom: none; }
+        .metric-label { color: #90a4ae; }
+        .metric-label.section-divider { color: #4fc3f7; font-size: 11px; letter-spacing: 0.5px; border-bottom: none; }
+        .metric-value { font-family: monospace; font-weight: 600; }
+        .metric-value.good { color: #4caf50; }
+        .metric-value.warn { color: #ff9800; }
+        .metric-value.bad { color: #f44336; }
+
+        .findings-list { list-style: none; padding: 0; }
+        .findings-list li {
+            padding: 8px 12px;
+            margin-bottom: 6px;
+            background: #0f1923;
+            border-radius: 4px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .recs-list li {
+            padding: 8px 12px;
+            margin-bottom: 6px;
+            background: #1e3040;
+            border-left: 3px solid #4fc3f7;
+            border-radius: 0 4px 4px 0;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>Backhaul Monitor</h1>
+            <div class="subtitle">BH Link Diagnostics &mdash; PCN | Weather | RF Telemetry</div>
+        </div>
+    </div>
+
+    <div class="search-bar">
+        <input
+            type="text"
+            id="search-input"
+            placeholder="Search by hostname, tower name, or IP (e.g. HILLTOP, BH-AV4200-18-1, 10.247.190.75)"
+            autocomplete="off"
+        />
+        <div class="search-results" id="search-results"></div>
+    </div>
+
+    <div class="content">
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <div>Analyzing link...</div>
+        </div>
+
+        <div class="results" id="results">
+            <!-- Verdict banner -->
+            <div class="verdict-banner" id="verdict-banner">
+                <div style="flex:1">
+                    <div class="verdict-title" id="verdict-title"></div>
+                    <div class="verdict-confidence" id="verdict-confidence"></div>
+                </div>
+                <button id="copy-btn" onclick="copySummary()" style="background:#2d4a5e;color:#e0e0e0;border:none;padding:10px 18px;border-radius:6px;cursor:pointer;font-size:14px;white-space:nowrap">Copy Summary</button>
+            </div>
+
+            <!-- Link info + RF cards -->
+            <div class="card-grid">
+                <div class="card" id="link-card">
+                    <h3>Link Information</h3>
+                    <div id="link-info"></div>
+                </div>
+                <div class="card" id="rf-card">
+                    <h3>RF Telemetry (Near End)</h3>
+                    <div id="rf-info"></div>
+                </div>
+                <div class="card" id="pcn-card">
+                    <h3>Link Design (FCC / Baseline)</h3>
+                    <div id="pcn-info"></div>
+                </div>
+                <div class="card" id="far-end-card">
+                    <h3>Far End RF</h3>
+                    <div id="far-end-info"></div>
+                </div>
+                <div class="card" id="weather-card">
+                    <h3>Weather Conditions</h3>
+                    <div id="weather-info"></div>
+                </div>
+            </div>
+
+            <!-- Findings + Recommendations -->
+            <div class="card-grid">
+                <div class="card">
+                    <h3>Findings</h3>
+                    <ul class="findings-list" id="findings-list"></ul>
+                </div>
+                <div class="card">
+                    <h3>Recommendations</h3>
+                    <ul class="findings-list recs-list" id="recs-list"></ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const searchInput = document.getElementById('search-input');
+        const searchResults = document.getElementById('search-results');
+        const loading = document.getElementById('loading');
+        const results = document.getElementById('results');
+        let searchTimeout;
+
+        searchInput.addEventListener('input', (e) => {
+            clearTimeout(searchTimeout);
+            const q = e.target.value.trim();
+            if (q.length < 3) {
+                searchResults.classList.remove('active');
+                return;
+            }
+            searchTimeout = setTimeout(() => doSearch(q), 300);
+        });
+
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                searchResults.classList.remove('active');
+                const q = searchInput.value.trim();
+                if (q) runDiagnosis(q);
+            }
+        });
+
+        async function doSearch(q) {
+            try {
+                const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+                const data = await resp.json();
+                if (data.results.length > 0) {
+                    searchResults.innerHTML = data.results.map(r => {
+                        const meta = [r.ip, r.tower, r.link_type].filter(Boolean).join(' · ');
+                        return `<div class="search-result-item" onclick="selectHost('${r.hostname}')">
+                            <span>${r.hostname}</span>
+                            ${meta ? `<span style="color:#546e7a;font-size:12px;float:right">${meta}</span>` : ''}
+                        </div>`;
+                    }).join('');
+                    searchResults.classList.add('active');
+                } else {
+                    searchResults.classList.remove('active');
+                }
+            } catch (e) {
+                searchResults.classList.remove('active');
+            }
+        }
+
+        function selectHost(hostname) {
+            searchInput.value = hostname;
+            searchResults.classList.remove('active');
+            runDiagnosis(hostname);
+        }
+
+        async function runDiagnosis(hostname) {
+            loading.classList.add('active');
+            results.classList.remove('active');
+
+            try {
+                const resp = await fetch(`/api/diagnose/${encodeURIComponent(hostname)}`);
+                const data = await resp.json();
+                renderResults(data);
+            } catch (e) {
+                loading.classList.remove('active');
+                alert('Error: ' + e.message);
+            }
+        }
+
+        function renderResults(data) {
+            lastDiagData = data;
+            loading.classList.remove('active');
+            results.classList.add('active');
+
+            // Verdict banner
+            const banner = document.getElementById('verdict-banner');
+            const v = data.verdict;
+            banner.className = 'verdict-banner ' + v.verdict;
+            document.getElementById('verdict-title').textContent = formatVerdict(v.verdict);
+            document.getElementById('verdict-confidence').textContent =
+                `Confidence: ${v.confidence}% | Severity: ${v.severity}`;
+
+            // Link info
+            const li = data.link_info;
+            document.getElementById('link-info').innerHTML = renderMetrics([
+                ['Hostname', data.hostname],
+                ['IP', data.ip || 'N/A'],
+                ['Model', li.model],
+                ['Family', li.radio_family],
+                ['Band', li.band_ghz ? li.band_ghz + ' GHz' : 'N/A'],
+                ['Technology', li.technology],
+                ['Rain Sensitivity', li.rain_sensitivity],
+                ['Tower A', li.tower_a],
+                ['Tower Z', li.tower_z],
+                ['Far End', li.far_end],
+                ['Far End IP', li.far_end_ip || 'N/A'],
+            ]);
+
+            // RF snapshot
+            const rf = data.rf_snapshot || {};
+            const snmpDown = rf.snmp_down;
+            const modLabel = (val, name) => name ? `${val} (${name})` : val;
+            document.getElementById('rf-info').innerHTML =
+                (snmpDown ? '<div style="background:#3a1a1a;color:#f44336;padding:8px 12px;border-radius:4px;margin-bottom:12px;font-size:13px">SNMP Down — No live RF data from this end</div>' : '') +
+                (rf.radio_count > 1 ? `<div style="background:#1e3040;color:#4fc3f7;padding:8px 12px;border-radius:4px;margin-bottom:12px;font-size:13px">${rf.radio_count} carriers (${rf.link_type || 'N+0'})</div>` : '') +
+                renderMetrics([
+                    ['RSL', formatDb(rf.rsl)],
+                    ['SNR', formatDb(rf.snr)],
+                    ['RX Mod', modLabel(rf.rxmod, rf.rxmod_name)],
+                    ['Max Mod', modLabel(rf.maxmod, rf.maxmod_name)],
+                    ['Min Mod', modLabel(rf.minmod, rf.minmod_name)],
+                    ['TX Power', formatDb(rf.txpower)],
+                    ['BER', rf.ber],
+                    ['RX Capacity', rf.rxcap],
+                    ['TX Capacity', rf.txcap],
+                ]) +
+                renderAllRadios(rf.all_radios);
+
+            // PCN / Baseline
+            const pcn = data.pcn || {};
+            const a = data.assessment || {};
+            const bl = data.baseline || {};
+            const offTargetCls = a.off_target_db != null ? (a.off_target_db > 3 ? 'bad' : a.off_target_db > 1 ? 'warn' : 'good') : '';
+            const hasPcn = Object.keys(pcn).length > 0;
+
+            const blDelta = a.baseline_delta_db;
+            const blWithin = blDelta != null && Math.abs(blDelta) <= 2;
+            const blFlag = blDelta != null && Math.abs(blDelta) >= 3;
+            const blDeltaCls = blDelta != null ? (blFlag ? 'bad' : blWithin ? 'good' : 'warn') : '';
+            const blDeltaLabel = blDelta != null
+                ? (blWithin ? 'Within tolerance' : blFlag ? 'Outside tolerance' : '')
+                : '';
+
+            let pcnRows = [
+                ['Current RSL', formatDb(a.current_rsl)],
+                ['7-Day Avg RSL (Zabbix)', formatDb(bl.baseline), bl.baseline != null ? 'good' : ''],
+                ['Δ Baseline', blDelta != null ? (blDelta > 0 ? '+' : '') + blDelta.toFixed(1) + ' dB — ' + blDeltaLabel : 'N/A', blDeltaCls],
+                ['Tolerance', '±2 dB'],
+            ];
+
+            if (hasPcn && a.off_target_db != null) {
+                pcnRows.splice(2, 0,
+                    [a.off_target_db != null && Math.abs(a.off_target_db) <= 3 ? 'On-Target (PCN)' : 'Off-Target (PCN)',
+                     (a.off_target_db > 0 ? '+' : '') + a.off_target_db.toFixed(1) + ' dB', offTargetCls],
+                );
+            }
+
+            if (hasPcn) {
+                pcnRows.push(
+                    ['───── PCN Coordinated ─────', ''],
+                    ['Coord TX Power', formatDb(pcn['coordPower1(dBm)'])],
+                    ['Coord RSL (at max pwr)', formatDb(pcn['rxcoordPower1(dBm)'])],
+                    ['Expected RSL (at actual pwr)', formatDb(a.adjusted_expected_rsl), a.adjusted_expected_rsl != null ? 'good' : ''],
+                    ['Fade Margin (to coord)', formatDb(a.fade_margin_db)],
+                    ['───── Link Design ─────', ''],
+                    ['Antenna', pcn.mainmodel1],
+                    ['Antenna Size', pcn['maindiameter1(ft)'] ? pcn['maindiameter1(ft)'] + ' ft' : 'N/A'],
+                    ['Radio Model', pcn.radiomodel1],
+                    ['Azimuth', pcn['azimuth12(deg)'] ? pcn['azimuth12(deg)'] + '°' : 'N/A'],
+                    ['Distance', pcn['distance(mi)'] ? pcn['distance(mi)'] + ' mi' : 'N/A'],
+                    ['Band (PCN)', pcn.band || 'N/A'],
+                );
+            }
+
+            document.getElementById('pcn-info').innerHTML = renderMetrics(pcnRows);
+
+            // Far end
+            const fe = data.far_end_rf || {};
+            document.getElementById('far-end-info').innerHTML = Object.keys(fe).length > 0
+                ? renderMetrics([
+                    ['RSL', formatDb(fe.rsl)],
+                    ['SNR', formatDb(fe.snr)],
+                    ['RX Mod', fe.rxmod],
+                    ['Max Mod', fe.maxmod],
+                    ['TX Power', formatDb(fe.txpower)],
+                    ['BER', fe.ber],
+                ])
+                : '<div style="color:#546e7a;padding:16px">No far-end data available</div>';
+
+            // Weather
+            const wx = data.weather || {};
+            document.getElementById('weather-info').innerHTML = Object.keys(wx).length > 0
+                ? renderMetrics([
+                    ['Conditions', wx.description],
+                    ['Rain Rate', wx.rain_rate_mm_hr != null ? wx.rain_rate_mm_hr + ' mm/hr' : 'N/A',
+                        wx.rain_rate_mm_hr > 7.5 ? 'bad' : wx.rain_rate_mm_hr > 2.5 ? 'warn' : 'good'],
+                    ['Rain Class', wx.rain_classification,
+                        wx.rain_classification === 'none' ? 'good' : wx.rain_classification === 'light' ? 'warn' : 'bad'],
+                    ['Rain Fade', wx.rain_fade_likely ? 'YES — fade expected' : 'No',
+                        wx.rain_fade_likely ? 'bad' : 'good'],
+                    ['Humidity', wx.humidity_pct != null ? wx.humidity_pct + '%' : 'N/A'],
+                    ['Wind', wx.wind_speed_mph != null ? wx.wind_speed_mph + ' mph' : 'N/A'],
+                    ['Temperature', wx.temperature_f != null ? wx.temperature_f + '°F' : 'N/A'],
+                    ['Est. Fade', wx.estimated_fade_db_per_km != null ? wx.estimated_fade_db_per_km + ' dB/km' : 'N/A'],
+                ])
+                : '<div style="color:#546e7a;padding:16px">No weather data available</div>';
+
+            // Active problems
+            const probs = data.active_problems || [];
+            if (probs.length > 0) {
+                const probHtml = probs.map(p => {
+                    const sev = ['info','info','warning','average','high','critical'][parseInt(p.severity)] || 'info';
+                    const sevCls = parseInt(p.severity) >= 4 ? 'bad' : parseInt(p.severity) >= 2 ? 'warn' : '';
+                    return `<li><span class="metric-value ${sevCls}">[${sev}]</span> ${p.name}</li>`;
+                }).join('');
+                v.findings.unshift(`${probs.length} active Zabbix problem(s)`);
+            }
+
+            // Findings
+            document.getElementById('findings-list').innerHTML =
+                v.findings.map(f => `<li>${f}</li>`).join('');
+
+            // Recommendations
+            document.getElementById('recs-list').innerHTML =
+                v.recommendations.map(r => `<li>${r}</li>`).join('');
+        }
+
+        let lastDiagData = null;
+
+        function copySummary() {
+            if (!lastDiagData) return;
+            const text = buildSummaryText(lastDiagData);
+            // Fallback for non-HTTPS (clipboard API requires secure context)
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(() => showCopied());
+            } else {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.left = '-9999px';
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                document.body.removeChild(ta);
+                showCopied();
+            }
+        }
+
+        function showCopied() {
+            const btn = document.getElementById('copy-btn');
+            btn.textContent = 'Copied!';
+            btn.style.background = '#1b5e20';
+            setTimeout(() => { btn.textContent = 'Copy Summary'; btn.style.background = '#2d4a5e'; }, 2000);
+        }
+
+        function renderMetrics(rows) {
+            return rows.map(([label, value, cls]) => {
+                if (label.startsWith('─')) {
+                    return `<div class="metric-row" style="border-bottom:none;padding:8px 0 2px">
+                        <span class="metric-label section-divider">${label.replace(/─/g, '').trim()}</span>
+                        <span></span>
+                    </div>`;
+                }
+                return `<div class="metric-row">
+                    <span class="metric-label">${label}</span>
+                    <span class="metric-value ${cls || ''}">${value ?? 'N/A'}</span>
+                </div>`;
+            }).join('');
+        }
+
+        function formatDb(val) {
+            if (val === null || val === undefined) return 'N/A';
+            return typeof val === 'number' ? val.toFixed(1) + ' dB' : val;
+        }
+
+        function renderAllRadios(radios) {
+            if (!radios || radios.length < 2) return '';
+            let html = '<div style="margin-top:12px;border-top:1px solid #2d4a5e;padding-top:12px"><div style="font-size:12px;color:#4fc3f7;margin-bottom:8px;text-transform:uppercase">All Carriers</div>';
+            html += '<table style="width:100%;font-size:13px;border-collapse:collapse">';
+            html += '<tr style="color:#90a4ae;border-bottom:1px solid #1e3040"><th style="text-align:left;padding:4px">ID</th><th>RSL</th><th>SNR</th><th>Mod</th><th>Max</th><th>BER</th><th>TX Pwr</th></tr>';
+            radios.forEach(r => {
+                html += `<tr style="border-bottom:1px solid #1e3040">
+                    <td style="padding:4px;font-family:monospace">${r.radio_id}</td>
+                    <td style="text-align:center">${r.rsl != null ? r.rsl.toFixed(1) : 'N/A'}</td>
+                    <td style="text-align:center">${r.snr != null ? r.snr.toFixed(1) : 'N/A'}</td>
+                    <td style="text-align:center">${r.rxmod_name || r.rxmod || 'N/A'}</td>
+                    <td style="text-align:center">${r.maxmod_name || r.maxmod || 'N/A'}</td>
+                    <td style="text-align:center">${r.ber ?? 'N/A'}</td>
+                    <td style="text-align:center">${r.txpower != null ? r.txpower.toFixed(1) : 'N/A'}</td>
+                </tr>`;
+            });
+            html += '</table></div>';
+            return html;
+        }
+
+        function buildSummaryText(data) {
+            const v = data.verdict;
+            const li = data.link_info;
+            const rf = data.rf_snapshot || {};
+            const a = data.assessment || {};
+            const bl = data.baseline || {};
+            const wx = data.weather || {};
+            const pcn = data.pcn || {};
+            const probs = data.active_problems || [];
+            const fe = data.far_end_rf || {};
+
+            let lines = [];
+            lines.push(`BH Diagnosis: ${data.hostname} (${data.ip || '?'})`);
+            lines.push(`${li.tower_a || '?'} → ${li.tower_z || '?'} | ${li.model || '?'} ${li.band_ghz ? li.band_ghz + 'GHz' : ''} ${rf.link_type || ''}`);
+            lines.push(`Verdict: ${formatVerdict(v.verdict)}`);
+            lines.push('');
+
+            // Near-end RF — one line
+            if (rf.snmp_down) {
+                lines.push('Near: SNMP DOWN — no live RF');
+            } else {
+                lines.push(`Near:  RSL ${rf.rsl != null ? rf.rsl.toFixed(1) : '?'} | SNR ${rf.snr != null ? rf.snr.toFixed(1) : '?'} | ${rf.rxmod_name || 'Mod ' + rf.rxmod} | TX ${rf.txpower != null ? rf.txpower.toFixed(1) : '?'} dBm | BER ${rf.ber ?? '?'}`);
+            }
+
+            // Far-end — one line
+            if (Object.keys(fe).length > 0) {
+                lines.push(`Far:   RSL ${fe.rsl != null ? fe.rsl.toFixed(1) : '?'} | SNR ${fe.snr != null ? fe.snr.toFixed(1) : '?'} | ${fe.rxmod_name || 'Mod ' + fe.rxmod} | TX ${fe.txpower != null ? fe.txpower.toFixed(1) : '?'} dBm | BER ${fe.ber ?? '?'}`);
+            }
+
+            // Carriers if multi-radio
+            if (rf.all_radios && rf.all_radios.length > 1) {
+                rf.all_radios.forEach(r => {
+                    lines.push(`  R${r.radio_id}: RSL ${r.rsl != null ? r.rsl.toFixed(1) : '?'} | ${r.rxmod_name || '?'} | BER ${r.ber ?? '?'}`);
+                });
+            }
+
+            // Baseline + off-target
+            lines.push('');
+            const fmtDelta = (v) => v != null ? (v > 0 ? '+' : '') + v.toFixed(1) : '?';
+            let designLine = `Current RSL: ${a.current_rsl != null ? a.current_rsl.toFixed(1) : '?'} dBm`;
+            if (a.off_target_db != null) {
+                const otLabel = Math.abs(a.off_target_db) <= 3 ? 'On-target' : 'Off-target';
+                designLine += ` | ${otLabel} (PCN): ${fmtDelta(a.off_target_db)} dB`;
+            }
+            designLine += ` | Zabbix 7d: ${bl.baseline != null ? bl.baseline.toFixed(1) : '?'} dBm (Δ ${fmtDelta(a.baseline_delta_db)} dB, ±${bl.stddev || '?'})`;
+            lines.push(designLine);
+
+            // Weather — only if rain
+            if (wx.rain_rate_mm_hr > 0) {
+                lines.push(`Weather: ${wx.description} | Rain ${wx.rain_rate_mm_hr} mm/hr (${wx.rain_classification}) | Fade: ${wx.rain_fade_likely ? 'YES' : 'No'}`);
+            }
+
+            // Findings + recommendations — only if not normal
+            if (v.verdict !== 'normal') {
+                lines.push('');
+                v.findings.forEach(f => lines.push(`• ${f}`));
+                v.recommendations.forEach(r => lines.push(`→ ${r}`));
+            }
+
+            return lines.join('\n');
+        }
+
+        function formatVerdict(v) {
+            const labels = {
+                rain_fade: 'Rain Fade Detected',
+                off_target: 'Off-Target from PCN',
+                hardware_issue: 'Hardware Issue Suspected',
+                alignment_issue: 'Alignment Issue',
+                interference: 'Interference Detected',
+                normal: 'Link Healthy',
+                insufficient_data: 'Insufficient Data',
+            };
+            return labels[v] || v;
+        }
+    </script>
+</body>
+</html>
