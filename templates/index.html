@@ -462,20 +462,20 @@
                 document.getElementById('weather-info').innerHTML = '<div style="color:#546e7a;padding:16px">No weather data available</div>';
             }
 
-            // Active problems
+            // Active problems (detail list)
             const probs = data.active_problems || [];
+            let probHtml = '';
             if (probs.length > 0) {
-                const probHtml = probs.map(p => {
+                probHtml = '<div style="margin-bottom:8px">' + probs.map(p => {
                     const sev = ['info','info','warning','average','high','critical'][parseInt(p.severity)] || 'info';
                     const sevCls = parseInt(p.severity) >= 4 ? 'bad' : parseInt(p.severity) >= 2 ? 'warn' : '';
                     return `<li><span class="metric-value ${sevCls}">[${sev}]</span> ${p.name}</li>`;
-                }).join('');
-                v.findings.unshift(`${probs.length} active Zabbix problem(s)`);
+                }).join('') + '</div>';
             }
 
-            // Findings
+            // Findings (problems count already included by engine)
             document.getElementById('findings-list').innerHTML =
-                v.findings.map(f => `<li>${f}</li>`).join('');
+                probHtml + v.findings.map(f => `<li>${f}</li>`).join('');
 
             // Recommendations
             document.getElementById('recs-list').innerHTML =

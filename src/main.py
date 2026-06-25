@@ -213,6 +213,8 @@ async def api_diagnose(request: Request, hostname: str):
         far_end_rf=far_end_rf if isinstance(far_end_rf, dict) else None,
         band_ghz=band_ghz,
         distance_mi=distance_mi,
+        snmp_down=snmp_down,
+        active_problems=problems if problems else None,
     )
 
     return {

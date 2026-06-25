@@ -34,6 +34,8 @@ def diagnose_link(
     far_end_rf: Optional[dict] = None,
     band_ghz: Optional[int] = None,
     distance_mi: Optional[float] = None,
+    snmp_down: bool = False,
+    active_problems: Optional[list] = None,
 ) -> dict[str, Any]:
     """Run full diagnosis on a BH link and return a structured verdict.
 
@@ -49,6 +51,22 @@ def diagnose_link(
         VERDICT_INTERFERENCE: 0.0,
         VERDICT_NORMAL: 0.0,
     }
+
+    # ── Active Zabbix problems ────────────────────────────────────────
+    if active_problems:
+        findings.append(f"{len(active_problems)} active Zabbix problem(s)")
+
+    # ── SNMP Down — near-end unreachable ──────────────────────────────
+    if snmp_down:
+        scores[VERDICT_HARDWARE] += 30
+        findings.append("Near-end SNMP unreachable — no live RF telemetry from this end")
+        if far_end_rf and far_end_rf.get("rsl") is not None:
+            far_rsl = far_end_rf["rsl"]
+            findings.append(
+                f"Far-end receiving signal (RSL {far_rsl:.1f} dB) — "
+                "link appears operational, near-end management issue"
+            )
+            scores[VERDICT_NORMAL] += 20
 
     # ── Check 1: Is it raining (now or recently)? ──────────────────────
     if weather:
@@ -150,8 +168,8 @@ def diagnose_link(
     total = sum(scores.values()) or 1
     confidence = min(round(best_score / total * 100), 100)
 
-    severity = _classify_severity(rf_snapshot, baseline, mod)
-    recommendations = _get_recommendations(best_verdict, findings, mod)
+    severity = _classify_severity(rf_snapshot, baseline, mod, snmp_down, far_end_rf)
+    recommendations = _get_recommendations(best_verdict, findings, mod, snmp_down)
 
     return {
         "verdict": best_verdict,
@@ -167,10 +185,18 @@ def _classify_severity(
     rf_snapshot: dict,
     baseline: Optional[dict],
     mod: Optional[dict],
+    snmp_down: bool = False,
+    far_end_rf: Optional[dict] = None,
 ) -> str:
     """Classify severity: normal, minor, moderate, severe, critical."""
     rsl = rf_snapshot.get("rsl")
     if rsl is None:
+        if snmp_down:
+            # SNMP down but far-end has signal = minor (management issue)
+            # SNMP down and no far-end = moderate (can't assess link)
+            if far_end_rf and far_end_rf.get("rsl") is not None:
+                return "minor"
+            return "moderate"
         return "unknown"
 
     if baseline:
@@ -200,11 +226,18 @@ def _get_recommendations(
     verdict: str,
     findings: list[str],
     mod: Optional[dict],
+    snmp_down: bool = False,
 ) -> list[str]:
     """Generate actionable recommendations based on verdict."""
     recs: list[str] = []
 
-    if verdict == VERDICT_RAIN_FADE:
+    if snmp_down:
+        recs.append("Verify SNMP agent is running and reachable on the near-end radio")
+        recs.append("Check device management IP, SNMP community string, and firewall rules")
+        # If far-end shows signal, note that the link itself is likely fine
+        if any("link appears operational" in f for f in findings):
+            recs.append("Far end confirms signal — link is up, this is a management-plane issue")
+    elif verdict == VERDICT_RAIN_FADE:
         recs.append("Monitor — rain fade is temporary, link should recover when weather clears")
         recs.append("Check if link has adequate fade margin for this rain region")
 
