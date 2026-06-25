@@ -342,8 +342,8 @@
                     ['Min Mod', modLabel(rf.minmod, rf.minmod_name)],
                     ['TX Power', formatDb(rf.txpower)],
                     ['BER', rf.ber],
-                    ['RX Capacity', rf.rxcap],
-                    ['TX Capacity', rf.txcap],
+                    ['RX Capacity', rf.rxcap != null ? rf.rxcap.toFixed(1) + ' Mbps' : 'N/A'],
+                    ['TX Capacity', rf.txcap != null ? rf.txcap.toFixed(1) + ' Mbps' : 'N/A'],
                 ]) +
                 renderAllRadios(rf.all_radios);
 
@@ -410,21 +410,40 @@
 
             // Weather
             const wx = data.weather || {};
-            document.getElementById('weather-info').innerHTML = Object.keys(wx).length > 0
-                ? renderMetrics([
+            if (Object.keys(wx).length > 0) {
+                let wxRows = [
                     ['Conditions', wx.description],
-                    ['Rain Rate', wx.rain_rate_mm_hr != null ? wx.rain_rate_mm_hr + ' mm/hr' : 'N/A',
+                    ['Rain Rate (now)', wx.rain_rate_mm_hr != null ? wx.rain_rate_mm_hr + ' mm/hr' : 'N/A',
                         wx.rain_rate_mm_hr > 7.5 ? 'bad' : wx.rain_rate_mm_hr > 2.5 ? 'warn' : 'good'],
-                    ['Rain Class', wx.rain_classification,
-                        wx.rain_classification === 'none' ? 'good' : wx.rain_classification === 'light' ? 'warn' : 'bad'],
-                    ['Rain Fade', wx.rain_fade_likely ? 'YES — fade expected' : 'No',
-                        wx.rain_fade_likely ? 'bad' : 'good'],
+                    ['Rain Fade', wx.rain_fade_likely ? 'YES — fade expected' : wx.rain_fade_recovering ? 'Recovering — recent rain' : 'No',
+                        wx.rain_fade_likely ? 'bad' : wx.rain_fade_recovering ? 'warn' : 'good'],
                     ['Humidity', wx.humidity_pct != null ? wx.humidity_pct + '%' : 'N/A'],
                     ['Wind', wx.wind_speed_mph != null ? wx.wind_speed_mph + ' mph' : 'N/A'],
                     ['Temperature', wx.temperature_f != null ? wx.temperature_f + '°F' : 'N/A'],
-                    ['Est. Fade', wx.estimated_fade_db_per_km != null ? wx.estimated_fade_db_per_km + ' dB/km' : 'N/A'],
-                ])
-                : '<div style="color:#546e7a;padding:16px">No weather data available</div>';
+                ];
+                if (wx.estimated_fade_db_per_km != null) {
+                    wxRows.push(['Est. Fade', wx.estimated_fade_db_per_km + ' dB/km', 'warn']);
+                }
+
+                const recent = wx.recent_rain;
+                if (recent && recent.had_rain) {
+                    wxRows.push(
+                        ['───── Last 6 Hours ─────', ''],
+                        ['Total Rain', recent.total_rain_mm + ' mm', 'warn'],
+                        ['Peak Rain', recent.max_rain_mm + ' mm at ' + (recent.max_rain_time || '').split('T')[1], 'warn'],
+                    );
+                    recent.rain_hours.forEach(h => {
+                        const time = (h.time || '').split('T')[1];
+                        wxRows.push([time, h.rain_mm + ' mm — ' + h.description, 'warn']);
+                    });
+                } else if (recent) {
+                    wxRows.push(['Last 6 Hours', 'No rain', 'good']);
+                }
+
+                document.getElementById('weather-info').innerHTML = renderMetrics(wxRows);
+            } else {
+                document.getElementById('weather-info').innerHTML = '<div style="color:#546e7a;padding:16px">No weather data available</div>';
+            }
 
             // Active problems
             const probs = data.active_problems || [];
@@ -561,9 +580,12 @@
             designLine += ` | Zabbix 7d: ${bl.baseline != null ? bl.baseline.toFixed(1) : '?'} dBm (Δ ${fmtDelta(a.baseline_delta_db)} dB, ±${bl.stddev || '?'})`;
             lines.push(designLine);
 
-            // Weather — only if rain
+            // Weather — if current or recent rain
             if (wx.rain_rate_mm_hr > 0) {
                 lines.push(`Weather: ${wx.description} | Rain ${wx.rain_rate_mm_hr} mm/hr (${wx.rain_classification}) | Fade: ${wx.rain_fade_likely ? 'YES' : 'No'}`);
+            } else if (wx.rain_fade_recovering && wx.recent_rain) {
+                const rc = wx.recent_rain;
+                lines.push(`Weather: ${wx.description} | Recent rain: ${rc.total_rain_mm} mm in last 6h (peak ${rc.max_rain_mm} mm at ${(rc.max_rain_time||'').split('T')[1]}) — recovering`);
             }
 
             // Findings + recommendations — only if not normal

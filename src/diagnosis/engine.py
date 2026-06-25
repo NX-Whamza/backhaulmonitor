@@ -50,9 +50,12 @@ def diagnose_link(
         VERDICT_NORMAL: 0.0,
     }
 
-    # ── Check 1: Is it raining? ───────────────────────────────────────
+    # ── Check 1: Is it raining (now or recently)? ──────────────────────
     if weather:
         rain_rate = weather.get("rain_rate_mm_hr", 0)
+        recent = weather.get("recent_rain", {})
+        recovering = weather.get("rain_fade_recovering", False)
+
         if rain_rate > 0 and band_ghz:
             from src.pcn.calculator import estimate_rain_attenuation
             fade = estimate_rain_attenuation(band_ghz, rain_rate)
@@ -65,6 +68,15 @@ def diagnose_link(
             elif fade > 0.5:
                 scores[VERDICT_RAIN_FADE] += 20
                 findings.append(f"Light rain: {rain_rate:.1f} mm/hr, minor fade expected")
+        elif recovering and recent.get("had_rain"):
+            scores[VERDICT_RAIN_FADE] += 30
+            total = recent.get("total_rain_mm", 0)
+            peak = recent.get("max_rain_mm", 0)
+            peak_time = (recent.get("max_rain_time") or "").split("T")[-1]
+            findings.append(
+                f"Recent rain detected: {total} mm in last 6h "
+                f"(peak {peak} mm at {peak_time}) — link may be recovering"
+            )
 
     # ── Check 2: Off-target from PCN design ─────────────────────────────
     if pcn:
@@ -80,34 +92,19 @@ def diagnose_link(
                 findings.append(f"Running hot: {off_target:+.1f} dB above PCN design (unusual)")
                 scores[VERDICT_ALIGNMENT] += 10
 
-    # ── Check 2b: Baseline trend (Zabbix 7-day) ──────────────────────
+    # ── Check 3: Baseline trend (Zabbix 7-day) ─────────────────────────
     baseline_delta = calc_baseline_delta(rf_snapshot, baseline)
     if baseline_delta is not None:
         if abs(baseline_delta) <= 2.0:
-            if not pcn:
-                scores[VERDICT_NORMAL] += 20
+            scores[VERDICT_NORMAL] += 20
             findings.append(f"Zabbix baseline stable: {baseline_delta:+.1f} dB from 7d median")
-        elif baseline_delta > 5.0:
-            findings.append(f"RSL dropped {baseline_delta:+.1f} dB from Zabbix 7d baseline")
-            if not pcn:
+        elif baseline_delta >= 3.0:
+            if scores[VERDICT_RAIN_FADE] > 0:
+                scores[VERDICT_RAIN_FADE] += 20
+                findings.append(f"RSL dropped {baseline_delta:+.1f} dB from 7d baseline — consistent with rain/weather")
+            else:
                 scores[VERDICT_HARDWARE] += 20
-
-    # ── Check 3: RSL vs baseline trend ────────────────────────────────
-    current_rsl = rf_snapshot.get("rsl")
-    if current_rsl is not None and baseline:
-        baseline_rsl = baseline.get("baseline")
-        if baseline_rsl is not None:
-            delta = current_rsl - baseline_rsl
-            if abs(delta) <= 2.0:
-                scores[VERDICT_NORMAL] += 20
-            elif delta < -5.0:
-                # Big drop from baseline
-                if scores[VERDICT_RAIN_FADE] > 20:
-                    scores[VERDICT_RAIN_FADE] += 20  # reinforces rain fade
-                    findings.append(f"RSL dropped {delta:.1f} dB from baseline — consistent with rain fade")
-                else:
-                    scores[VERDICT_HARDWARE] += 20
-                    findings.append(f"RSL dropped {delta:.1f} dB from baseline — no rain detected")
+                findings.append(f"RSL dropped {baseline_delta:+.1f} dB from 7d baseline — no rain detected")
 
     # ── Check 4: Modulation headroom ──────────────────────────────────
     mod = calc_modulation_headroom(rf_snapshot)
@@ -124,6 +121,7 @@ def diagnose_link(
                 findings.append(f"Modulation margin low: {margin:.0f}%")
 
     # ── Check 5: Both ends degraded? ──────────────────────────────────
+    current_rsl = rf_snapshot.get("rsl")
     if far_end_rf:
         far_rsl = far_end_rf.get("rsl")
         if far_rsl is not None and current_rsl is not None:

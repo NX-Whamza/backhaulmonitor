@@ -57,13 +57,73 @@ class WeatherClient:
         except Exception:
             return None
 
+    async def get_recent_rain(self, lat: float, lon: float, hours: int = 6) -> Optional[dict]:
+        """Fetch hourly rain history for the last N hours."""
+        try:
+            resp = await self._client.get(
+                f"{self._base_url}/v1/forecast",
+                params={
+                    "latitude": lat,
+                    "longitude": lon,
+                    "hourly": "precipitation,rain,weather_code",
+                    "precipitation_unit": "mm",
+                    "past_hours": hours,
+                    "forecast_hours": 0,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            hourly = data.get("hourly", {})
+            times = hourly.get("time", [])
+            precip = hourly.get("precipitation", [])
+            rain = hourly.get("rain", [])
+            codes = hourly.get("weather_code", [])
+
+            if not times:
+                return None
+
+            # Find max rain and total
+            max_rain = 0.0
+            max_rain_time = None
+            total_rain = 0.0
+            rain_hours = []
+            for i, t in enumerate(times):
+                r = rain[i] if i < len(rain) else 0
+                p = precip[i] if i < len(precip) else 0
+                val = max(r, p)
+                total_rain += val
+                if val > 0:
+                    code = codes[i] if i < len(codes) else 0
+                    rain_hours.append({
+                        "time": t,
+                        "rain_mm": round(val, 1),
+                        "description": WMO_CODES.get(code, ""),
+                    })
+                if val > max_rain:
+                    max_rain = val
+                    max_rain_time = t
+
+            return {
+                "hours_checked": hours,
+                "total_rain_mm": round(total_rain, 1),
+                "max_rain_mm": round(max_rain, 1),
+                "max_rain_time": max_rain_time,
+                "had_rain": total_rain > 0,
+                "rain_hours": rain_hours,
+            }
+        except Exception:
+            return None
+
     async def check_rain_fade(
         self,
         lat: float,
         lon: float,
         band_ghz: Optional[int] = None,
     ) -> dict[str, Any]:
-        """Check if rain fade conditions exist at a location."""
+        """Check if rain fade conditions exist at a location.
+
+        Fetches current conditions AND 6-hour rain history.
+        """
         conditions = await self.get_conditions(lat, lon)
         if not conditions:
             return {"rain_fade_likely": False, "reason": "weather data unavailable"}
@@ -81,6 +141,7 @@ class WeatherClient:
             "description": conditions.get("description", ""),
         }
 
+        # Current rain fade
         if band_ghz and rain_rate > 0:
             from src.pcn.calculator import estimate_rain_attenuation
             result["estimated_fade_db_per_km"] = estimate_rain_attenuation(
@@ -89,6 +150,14 @@ class WeatherClient:
             result["rain_fade_likely"] = classification in ("moderate", "heavy", "extreme")
         else:
             result["rain_fade_likely"] = False
+
+        # 6-hour rain history
+        recent = await self.get_recent_rain(lat, lon, hours=6)
+        if recent:
+            result["recent_rain"] = recent
+            # If no current rain but recent rain, flag as recovering
+            if not result["rain_fade_likely"] and recent["had_rain"]:
+                result["rain_fade_recovering"] = True
 
         return result
 
