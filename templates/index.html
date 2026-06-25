@@ -249,11 +249,28 @@
             searchTimeout = setTimeout(() => doSearch(q), 300);
         });
 
-        searchInput.addEventListener('keydown', (e) => {
+        searchInput.addEventListener('keydown', async (e) => {
             if (e.key === 'Enter') {
                 searchResults.classList.remove('active');
                 const q = searchInput.value.trim();
-                if (q) runDiagnosis(q);
+                if (!q) return;
+                // If it looks like an IP, resolve to hostname first
+                if (/^\d+\.\d+/.test(q)) {
+                    try {
+                        const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+                        const data = await resp.json();
+                        if (data.results.length > 0) {
+                            searchInput.value = data.results[0].hostname;
+                            runDiagnosis(data.results[0].hostname);
+                        } else {
+                            alert('No BH device found for IP: ' + q);
+                        }
+                    } catch (err) {
+                        alert('Search failed: ' + err.message);
+                    }
+                } else {
+                    runDiagnosis(q);
+                }
             }
         });
 
@@ -519,14 +536,15 @@
             html += '<table style="width:100%;font-size:13px;border-collapse:collapse">';
             html += '<tr style="color:#90a4ae;border-bottom:1px solid #1e3040"><th style="text-align:left;padding:4px">ID</th><th>RSL</th><th>SNR</th><th>Mod</th><th>Max</th><th>BER</th><th>TX Pwr</th></tr>';
             radios.forEach(r => {
-                html += `<tr style="border-bottom:1px solid #1e3040">
-                    <td style="padding:4px;font-family:monospace">${r.radio_id}</td>
-                    <td style="text-align:center">${r.rsl != null ? r.rsl.toFixed(1) : 'N/A'}</td>
-                    <td style="text-align:center">${r.snr != null ? r.snr.toFixed(1) : 'N/A'}</td>
-                    <td style="text-align:center">${r.rxmod_name || r.rxmod || 'N/A'}</td>
-                    <td style="text-align:center">${r.maxmod_name || r.maxmod || 'N/A'}</td>
-                    <td style="text-align:center">${r.ber ?? 'N/A'}</td>
-                    <td style="text-align:center">${r.txpower != null ? r.txpower.toFixed(1) : 'N/A'}</td>
+                const inactive = r.rsl === 0 && r.snr === 0 && r.txpower === 0;
+                html += `<tr style="border-bottom:1px solid #1e3040;${inactive ? 'color:#546e7a' : ''}">
+                    <td style="padding:4px;font-family:monospace">${r.radio_id}${inactive ? ' (inactive)' : ''}</td>
+                    <td style="text-align:center">${inactive ? '—' : r.rsl != null ? r.rsl.toFixed(1) : 'N/A'}</td>
+                    <td style="text-align:center">${inactive ? '—' : r.snr != null ? r.snr.toFixed(1) : 'N/A'}</td>
+                    <td style="text-align:center">${inactive ? '—' : r.rxmod_name || r.rxmod || 'N/A'}</td>
+                    <td style="text-align:center">${inactive ? '—' : r.maxmod_name || r.maxmod || 'N/A'}</td>
+                    <td style="text-align:center">${inactive ? '—' : r.ber ?? 'N/A'}</td>
+                    <td style="text-align:center">${inactive ? '—' : r.txpower != null ? r.txpower.toFixed(1) : 'N/A'}</td>
                 </tr>`;
             });
             html += '</table></div>';

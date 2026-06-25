@@ -106,44 +106,47 @@ async def api_diagnose(request: Request, hostname: str):
     if not rf_prefix:
         rf_prefix = "av.wireless"
 
-    # Always try Zabbix search for far-end — parser guesses are often wrong
-    if tower_a and tower_z:
-        zabbix_far_end = await zabbix.find_far_end(hostname, tower_a, tower_z)
-        if zabbix_far_end:
-            far_end = zabbix_far_end
+    # Phase 1: Run all non-dependent queries in parallel
+    # (far-end search, host IP, RF, PCN, baseline, history, problems)
+    async def _find_far():
+        if tower_a and tower_z:
+            return await zabbix.find_far_end(hostname, tower_a, tower_z)
+        return None
 
-    # Run all enrichment in parallel
-    rf_task = zabbix.get_rf_snapshot(hostname, rf_prefix)
-    pcn_task = catalog.get_pcn(hostname, tower_a, tower_z)
-    baseline_task = zabbix.get_rsl_trend(hostname, rf_prefix, days=7)
-    history_task = zabbix.get_rsl_history(hostname, rf_prefix)
-    problems_task = zabbix.get_active_problems(hostname)
+    phase1 = await asyncio.gather(
+        zabbix.get_rf_snapshot(hostname, rf_prefix),
+        catalog.get_pcn(hostname, tower_a, tower_z),
+        zabbix.get_rsl_trend(hostname, rf_prefix, days=7),
+        zabbix.get_rsl_history(hostname, rf_prefix),
+        zabbix.get_active_problems(hostname),
+        zabbix.resolve_host(hostname),
+        _find_far(),
+        return_exceptions=True,
+    )
 
-    tasks = [rf_task, pcn_task, baseline_task, history_task, problems_task]
+    rf_snapshot = phase1[0] if not isinstance(phase1[0], Exception) else {}
+    pcn = phase1[1] if not isinstance(phase1[1], Exception) else None
+    baseline = phase1[2] if not isinstance(phase1[2], Exception) else None
+    rsl_history = phase1[3] if not isinstance(phase1[3], Exception) else None
+    problems = phase1[4] if not isinstance(phase1[4], Exception) else []
+    host_data = phase1[5] if not isinstance(phase1[5], Exception) else None
+    zabbix_far_end = phase1[6] if not isinstance(phase1[6], Exception) else None
 
-    # Far-end RF if we know the partner
-    if far_end and rf_prefix:
-        tasks.append(zabbix.get_rf_snapshot(far_end, rf_prefix))
-    else:
-        async def _noop():
-            return None
-        tasks.append(_noop())
-
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    rf_snapshot = results[0] if not isinstance(results[0], Exception) else {}
-    pcn = results[1] if not isinstance(results[1], Exception) else None
-    baseline = results[2] if not isinstance(results[2], Exception) else None
-    rsl_history = results[3] if not isinstance(results[3], Exception) else None
-    problems = results[4] if not isinstance(results[4], Exception) else []
-    far_end_rf = results[5] if not isinstance(results[5], Exception) else None
-
-    # Resolve host IP
-    host_data = await zabbix.resolve_host(hostname)
     host_ip = host_data.get("ip") if host_data else None
+    if zabbix_far_end:
+        far_end = zabbix_far_end
+
+    # Phase 2: Far-end RF + IP (depends on far_end resolution)
+    far_end_rf = None
     far_end_ip = None
-    if far_end:
-        far_host = await zabbix.resolve_host(far_end)
+    if far_end and rf_prefix:
+        phase2 = await asyncio.gather(
+            zabbix.get_rf_snapshot(far_end, rf_prefix),
+            zabbix.resolve_host(far_end),
+            return_exceptions=True,
+        )
+        far_end_rf = phase2[0] if not isinstance(phase2[0], Exception) else None
+        far_host = phase2[1] if not isinstance(phase2[1], Exception) else None
         far_end_ip = far_host.get("ip") if far_host else None
 
     # Sanitize zero RF values when SNMP is down

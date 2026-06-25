@@ -186,7 +186,7 @@ class CatalogClient:
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if settings.smap_auth_header:
             headers["Authorization"] = settings.smap_auth_header
-        self._client = httpx.AsyncClient(timeout=15.0, headers=headers)
+        self._client = httpx.AsyncClient(timeout=10.0, headers=headers)
         self._req_id = 0
 
     async def _call_tool(self, tool_name: str, arguments: dict) -> Optional[dict]:
@@ -218,9 +218,18 @@ class CatalogClient:
             return None
 
     async def get_pcn(self, hostname: str, tower_a: str = "", tower_z: str = "") -> Optional[dict]:
-        """Query SMAP bh_report_history for PCN designed values.
+        """Query SMAP bh_report_history for PCN designed values."""
+        import asyncio
+        try:
+            return await asyncio.wait_for(
+                self._get_pcn_inner(hostname, tower_a, tower_z),
+                timeout=10.0,
+            )
+        except asyncio.TimeoutError:
+            return None
 
-        Strategy (catalog has query restrictions on text columns):
+    async def _get_pcn_inner(self, hostname: str, tower_a: str, tower_z: str) -> Optional[dict]:
+        """PCN lookup strategy (catalog has query restrictions on text columns):
         1. Exact hostname match
         2. Single-tower query (site1/site2) with client-side model filtering
         3. Hostname guessing with exact matches
@@ -237,30 +246,46 @@ class CatalogClient:
         if result:
             return result
 
-        # 2. Single-tower query with client-side filtering
-        # (catalog can query text columns alone, just not combined with LIKE)
-        for tower in [t for t in [tower_a, tower_z] if t]:
-            result = await self._query_pcn_by_tower(tower, model_prefix)
-            if result:
-                return result
+        # 2. Single-tower query with client-side filtering (run in parallel)
+        towers_to_check = [t for t in [tower_a, tower_z] if t]
+        if towers_to_check:
+            import asyncio
+            tower_results = await asyncio.gather(
+                *[self._query_pcn_by_tower(t, model_prefix) for t in towers_to_check],
+                return_exceptions=True
+            )
+            for r in tower_results:
+                if r and not isinstance(r, Exception):
+                    return r
 
-        # 3. Hostname guessing — try common SMAP patterns
+        # 3. Hostname guessing — limited to most likely patterns only
         if tower_a and tower_z and model:
             band_candidates = []
+            num_suffix = ""
             for p in parts[2:]:
-                if p.isdigit() and int(p) in (5, 6, 11, 18, 24, 60, 70, 80):
-                    band_candidates.append(p)
-                    break
+                if p.isdigit():
+                    val = int(p)
+                    if val in (5, 6, 11, 18, 24, 60, 70, 80):
+                        band_candidates.append(p)
+                    elif val <= 9:
+                        num_suffix = p
 
-            for band in (band_candidates or ["11", "18", "6"]):
-                for suffix in [
-                    f"{tower_a}.{tower_z}",
-                    f"{tower_z}.{tower_a}",
-                ]:
-                    guess = f"BH-{model}-{band}-{suffix}"
-                    result = await self._query_pcn_by_host(guess)
-                    if result:
-                        return result
+            if band_candidates:
+                band = band_candidates[0]
+                guesses = []
+                for ta, tz in [(tower_a, tower_z), (tower_z, tower_a)]:
+                    if num_suffix:
+                        guesses.append(f"BH-{model}-{band}-{num_suffix}.{ta}.{tz}")
+                    guesses.append(f"BH-{model}-{band}-{ta}.{tz}")
+
+                # Run guesses in parallel
+                guess_results = await asyncio.gather(
+                    *[self._query_pcn_by_host(g) for g in guesses],
+                    return_exceptions=True,
+                )
+                for r in guess_results:
+                    if r and not isinstance(r, Exception):
+                        return r
 
         return None
 
