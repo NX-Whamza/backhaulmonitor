@@ -106,21 +106,29 @@ async def api_diagnose(request: Request, hostname: str):
     if not rf_prefix:
         rf_prefix = "av.wireless"
 
-    # Phase 1: Run all non-dependent queries in parallel
-    # (far-end search, host IP, RF, PCN, baseline, history, problems)
+    # Phase 1: Run ALL queries in parallel
     async def _find_far():
         if tower_a and tower_z:
             return await zabbix.find_far_end(hostname, tower_a, tower_z)
         return None
 
+    async def _get_tower_coords():
+        for t in [tower_a, tower_z]:
+            if t:
+                coords = await catalog.get_tower_coords(t)
+                if coords:
+                    return coords
+        return None
+
     phase1 = await asyncio.gather(
-        zabbix.get_rf_snapshot(hostname, rf_prefix),
-        catalog.get_pcn(hostname, tower_a, tower_z),
-        zabbix.get_rsl_trend(hostname, rf_prefix, days=7),
-        zabbix.get_rsl_history(hostname, rf_prefix),
-        zabbix.get_active_problems(hostname),
-        zabbix.resolve_host(hostname),
-        _find_far(),
+        zabbix.get_rf_snapshot(hostname, rf_prefix),      # 0
+        catalog.get_pcn(hostname, tower_a, tower_z),      # 1
+        zabbix.get_rsl_trend(hostname, rf_prefix, days=7), # 2
+        zabbix.get_rsl_history(hostname, rf_prefix),      # 3
+        zabbix.get_active_problems(hostname),             # 4
+        zabbix.resolve_host(hostname),                    # 5
+        _find_far(),                                       # 6
+        _get_tower_coords(),                               # 7
         return_exceptions=True,
     )
 
@@ -131,23 +139,41 @@ async def api_diagnose(request: Request, hostname: str):
     problems = phase1[4] if not isinstance(phase1[4], Exception) else []
     host_data = phase1[5] if not isinstance(phase1[5], Exception) else None
     zabbix_far_end = phase1[6] if not isinstance(phase1[6], Exception) else None
+    tower_coords = phase1[7] if not isinstance(phase1[7], Exception) else None
 
     host_ip = host_data.get("ip") if host_data else None
     if zabbix_far_end:
         far_end = zabbix_far_end
 
-    # Phase 2: Far-end RF + IP (depends on far_end resolution)
-    far_end_rf = None
-    far_end_ip = None
-    if far_end and rf_prefix:
-        phase2 = await asyncio.gather(
+    # Phase 2: Far-end RF/IP + Weather (both depend on phase 1 results)
+    async def _get_far_end_data():
+        if not far_end or not rf_prefix:
+            return None, None
+        results = await asyncio.gather(
             zabbix.get_rf_snapshot(far_end, rf_prefix),
             zabbix.resolve_host(far_end),
             return_exceptions=True,
         )
-        far_end_rf = phase2[0] if not isinstance(phase2[0], Exception) else None
-        far_host = phase2[1] if not isinstance(phase2[1], Exception) else None
-        far_end_ip = far_host.get("ip") if far_host else None
+        rf = results[0] if not isinstance(results[0], Exception) else None
+        host = results[1] if not isinstance(results[1], Exception) else None
+        return rf, host.get("ip") if host else None
+
+    async def _get_weather():
+        if not tower_coords:
+            return None
+        return await weather_client.check_rain_fade(
+            tower_coords["lat"], tower_coords["lon"], band_ghz
+        )
+
+    phase2 = await asyncio.gather(
+        _get_far_end_data(),
+        _get_weather(),
+        return_exceptions=True,
+    )
+
+    far_end_data = phase2[0] if not isinstance(phase2[0], Exception) else (None, None)
+    far_end_rf, far_end_ip = far_end_data if far_end_data else (None, None)
+    weather_data = phase2[1] if not isinstance(phase2[1], Exception) else None
 
     # Sanitize zero RF values when SNMP is down
     snmp_down = _snmp_is_down(problems)
@@ -159,18 +185,6 @@ async def api_diagnose(request: Request, hostname: str):
         band_match = re.match(r"(\d+)\s*GHz", pcn["band"])
         if band_match:
             band_ghz = int(band_match.group(1))
-
-    # Weather check — resolve tower lat/lon then fetch conditions
-    weather_data = None
-    tower_name = tower_a or tower_z
-    if tower_name:
-        coords = await catalog.get_tower_coords(tower_name)
-        if not coords and tower_z and tower_z != tower_name:
-            coords = await catalog.get_tower_coords(tower_z)
-        if coords:
-            weather_data = await weather_client.check_rain_fade(
-                coords["lat"], coords["lon"], band_ghz
-            )
 
     # Extract distance from PCN
     distance_mi = None
