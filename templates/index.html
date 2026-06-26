@@ -429,18 +429,54 @@
                 ? (blWithin ? 'Within tolerance' : blFlag ? 'Outside tolerance' : '')
                 : '';
 
-            let pcnRows = [
+            let pcnRows = [];
+
+            // Link configuration for multi-carrier
+            if (rf.link_type || rf.radio_count > 1) {
+                pcnRows.push(['Configuration', rf.link_type || rf.radio_count + '+0']);
+            }
+
+            pcnRows.push(
                 ['Current RSL', formatDb(a.current_rsl)],
                 ['7-Day Avg RSL (Zabbix)', formatDb(bl.baseline), bl.baseline != null ? 'good' : ''],
                 ['Δ Baseline', blDelta != null ? (blDelta > 0 ? '+' : '') + blDelta.toFixed(1) + ' dB — ' + blDeltaLabel : 'N/A', blDeltaCls],
                 ['Tolerance', '±2 dB'],
-            ];
+            );
 
             if (hasPcn && a.off_target_db != null) {
-                pcnRows.splice(2, 0,
+                const insertIdx = pcnRows.findIndex(r => r[0] === 'Δ Baseline');
+                pcnRows.splice(insertIdx, 0,
                     [a.off_target_db != null && Math.abs(a.off_target_db) <= 3 ? 'On-Target (PCN)' : 'Off-Target (PCN)',
                      (a.off_target_db > 0 ? '+' : '') + a.off_target_db.toFixed(1) + ' dB', offTargetCls],
                 );
+            }
+
+            // Per-carrier RSL spread for multi-carrier links
+            if (rf.all_radios && rf.all_radios.length > 1) {
+                const activeRadios = rf.all_radios.filter(r => !(r.rsl === 0 && r.snr === 0));
+                if (activeRadios.length > 1) {
+                    const rsls = activeRadios.map(r => r.rsl).filter(v => v != null);
+                    const spread = rsls.length > 1 ? (Math.max(...rsls) - Math.min(...rsls)).toFixed(1) : 0;
+                    const spreadCls = spread > 3 ? 'warn' : 'good';
+                    pcnRows.push(
+                        ['───── Carrier Baseline ─────', ''],
+                    );
+                    activeRadios.forEach(r => {
+                        pcnRows.push([`Carrier ${r.radio_id}`, formatDb(r.rsl)]);
+                    });
+                    pcnRows.push(['RSL Spread', spread + ' dB', spreadCls]);
+                }
+
+                // Aggregate capacity
+                const totalRx = rf.all_radios.reduce((s, r) => s + (r.rxcap || 0), 0);
+                const totalTx = rf.all_radios.reduce((s, r) => s + (r.txcap || 0), 0);
+                if (totalRx > 0 || totalTx > 0) {
+                    pcnRows.push(
+                        ['───── Aggregate ─────', ''],
+                        ['Total RX Capacity', totalRx.toFixed(0) + ' Mbps'],
+                        ['Total TX Capacity', totalTx.toFixed(0) + ' Mbps'],
+                    );
+                }
             }
 
             if (hasPcn) {
@@ -458,6 +494,8 @@
                     ['Distance', pcn['distance(mi)'] ? pcn['distance(mi)'] + ' mi' : 'N/A'],
                     ['Band (PCN)', pcn.band || 'N/A'],
                 );
+            } else {
+                pcnRows.push(['FCC/PCN Design', 'Not available']);
             }
 
             document.getElementById('pcn-info').innerHTML = renderMetrics(pcnRows);
