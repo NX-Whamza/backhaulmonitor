@@ -92,6 +92,26 @@ class BhLinkInfo:
         prefix = self.hostname[:dot_idx]
         return f"{prefix}.{self.tower_z}.{self.tower_a}"
 
+    @property
+    def companion_hostname(self) -> Optional[str]:
+        """For polarization-paired links (-H/-V), return the companion hostname.
+
+        Swaps -H↔-V in the tower portions of the original hostname string
+        so the result preserves the same dotted structure (2-part vs 3-part).
+        """
+        result = self.hostname
+        swapped = False
+        for tower in [self.tower_z, self.tower_a]:
+            if tower.endswith('-H'):
+                result = result.replace(tower, tower[:-1] + 'V')
+                swapped = True
+            elif tower.endswith('-V'):
+                result = result.replace(tower, tower[:-1] + 'H')
+                swapped = True
+        if not swapped:
+            return None
+        return result if result != self.hostname else None
+
 
 _BH_RE = re.compile(
     r"^(?:z)?BH-"

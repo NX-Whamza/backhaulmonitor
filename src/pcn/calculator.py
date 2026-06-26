@@ -246,17 +246,29 @@ class CatalogClient:
         if result:
             return result
 
-        # 2. Single-tower query with client-side filtering (run in parallel)
+        # 2. Single-tower query with client-side filtering
+        #    Use as_completed to return first successful result — avoids
+        #    slow queries for non-existent towers blocking faster ones.
         towers_to_check = [t for t in [tower_a, tower_z] if t]
         if towers_to_check:
             import asyncio
-            tower_results = await asyncio.gather(
-                *[self._query_pcn_by_tower(t, model_prefix) for t in towers_to_check],
-                return_exceptions=True
-            )
-            for r in tower_results:
-                if r and not isinstance(r, Exception):
-                    return r
+            tasks = [
+                asyncio.create_task(self._query_pcn_by_tower(t, model_prefix))
+                for t in towers_to_check
+            ]
+            try:
+                for coro in asyncio.as_completed(tasks):
+                    try:
+                        r = await coro
+                        if r:
+                            for t in tasks:
+                                t.cancel()
+                            return r
+                    except Exception:
+                        continue
+            finally:
+                for t in tasks:
+                    t.cancel()
 
         # 3. Hostname guessing — limited to most likely patterns only
         if tower_a and tower_z and model:

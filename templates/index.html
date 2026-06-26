@@ -233,6 +233,40 @@
     </div>
 
     <script>
+        const RADIO_USER = "{{ radio_user }}";
+        const RADIO_PASS = "{{ radio_pass }}";
+
+        function radioLink(ip) {
+            if (!ip || ip === 'N/A') return 'N/A';
+            return `<a href="#" onclick="radioLogin('${ip}');return false;" style="color:#4fc3f7;text-decoration:none;cursor:pointer" title="Open radio UI (auto-login)">${ip}</a>`;
+        }
+
+        function radioLogin(ip) {
+            const winName = 'radio_' + ip.replace(/\./g, '_');
+            window.open('', winName);
+
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = 'https://' + ip + '/wtmlogin';
+            form.target = winName;
+            form.style.display = 'none';
+
+            [['username', RADIO_USER], ['password', RADIO_PASS], ['locationInput', '/']].forEach(([n, v]) => {
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = n;
+                input.value = v;
+                form.appendChild(input);
+            });
+
+            document.body.appendChild(form);
+            form.submit();
+            document.body.removeChild(form);
+
+            // After login sets the cookie, navigate same window to the UI
+            setTimeout(() => { window.open('https://' + ip + '/', winName); }, 1500);
+        }
+
         const searchInput = document.getElementById('search-input');
         const searchResults = document.getElementById('search-results');
         const loading = document.getElementById('loading');
@@ -332,7 +366,7 @@
             const li = data.link_info;
             document.getElementById('link-info').innerHTML = renderMetrics([
                 ['Hostname', data.hostname],
-                ['IP', data.ip || 'N/A'],
+                ['IP', data.ip ? radioLink(data.ip) : 'N/A'],
                 ['Model', li.model],
                 ['Family', li.radio_family],
                 ['Band', li.band_ghz ? li.band_ghz + ' GHz' : 'N/A'],
@@ -341,7 +375,8 @@
                 ['Tower A', li.tower_a],
                 ['Tower Z', li.tower_z],
                 ['Far End', li.far_end],
-                ['Far End IP', li.far_end_ip || 'N/A'],
+                ['Far End IP', li.far_end_ip ? radioLink(li.far_end_ip) : 'N/A'],
+                ...(li.companion ? [['Companion (pol)', li.companion]] : []),
             ]);
 
             // RF snapshot
@@ -415,14 +450,15 @@
             // Far end
             const fe = data.far_end_rf || {};
             document.getElementById('far-end-info').innerHTML = Object.keys(fe).length > 0
-                ? renderMetrics([
+                ? (fe.radio_count > 1 ? `<div style="background:#1e3040;color:#4fc3f7;padding:8px 12px;border-radius:4px;margin-bottom:12px;font-size:13px">${fe.radio_count} carriers</div>` : '') +
+                  renderMetrics([
                     ['RSL', formatDb(fe.rsl)],
                     ['SNR', formatDb(fe.snr)],
-                    ['RX Mod', fe.rxmod],
-                    ['Max Mod', fe.maxmod],
+                    ['RX Mod', modLabel(fe.rxmod, fe.rxmod_name)],
+                    ['Max Mod', modLabel(fe.maxmod, fe.maxmod_name)],
                     ['TX Power', formatDb(fe.txpower)],
                     ['BER', fe.ber],
-                ])
+                  ]) + renderAllRadios(fe.all_radios)
                 : '<div style="color:#546e7a;padding:16px">No far-end data available</div>';
 
             // Weather
@@ -462,14 +498,22 @@
                 document.getElementById('weather-info').innerHTML = '<div style="color:#546e7a;padding:16px">No weather data available</div>';
             }
 
-            // Active problems (detail list)
+            // Active problems (detail list, deduplicated by name)
             const probs = data.active_problems || [];
             let probHtml = '';
             if (probs.length > 0) {
-                probHtml = '<div style="margin-bottom:8px">' + probs.map(p => {
+                const seen = {};
+                probs.forEach(p => {
+                    if (!seen[p.name] || parseInt(p.severity) > parseInt(seen[p.name].severity))
+                        seen[p.name] = { ...p, count: (seen[p.name]?.count || 0) + 1 };
+                    else
+                        seen[p.name].count++;
+                });
+                probHtml = '<div style="margin-bottom:8px">' + Object.values(seen).map(p => {
                     const sev = ['info','info','warning','average','high','critical'][parseInt(p.severity)] || 'info';
                     const sevCls = parseInt(p.severity) >= 4 ? 'bad' : parseInt(p.severity) >= 2 ? 'warn' : '';
-                    return `<li><span class="metric-value ${sevCls}">[${sev}]</span> ${p.name}</li>`;
+                    const countLabel = p.count > 1 ? ` (×${p.count})` : '';
+                    return `<li><span class="metric-value ${sevCls}">[${sev}]</span> ${p.name}${countLabel}</li>`;
                 }).join('') + '</div>';
             }
 

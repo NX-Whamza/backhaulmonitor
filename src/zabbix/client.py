@@ -306,13 +306,25 @@ class ZabbixClient:
     # ── Normalization ─────────────────────────────────────────────────
 
     async def find_far_end(self, hostname: str, tower_a: str, tower_z: str) -> Optional[str]:
-        """Find the far-end hostname by searching for BH devices at far tower."""
+        """Find the far-end hostname by searching for BH devices at far tower.
+
+        Handles -H/-V polarization suffixes: if tower_z is "TX-HOHQ-H" but
+        the Zabbix tag is "TX-HOHQ", the stripped variant is tried as well.
+        """
+        def _strip_pol(t: str) -> str:
+            return t[:-2] if t.endswith(('-H', '-V')) else t
+
+        # Tower name variants (original + stripped polarization suffix)
+        tz_variants = list(dict.fromkeys([tower_z, _strip_pol(tower_z)]))
+        ta_upper = tower_a.upper()
+
         # Search for BH devices at tower_z that reference tower_a
-        far_hosts = await self.search_by_tower(tower_z)
-        for h in far_hosts:
-            h_name = h.get("host", "")
-            if h_name != hostname and tower_a.upper() in h_name.upper():
-                return h_name
+        for tz in tz_variants:
+            far_hosts = await self.search_by_tower(tz)
+            for h in far_hosts:
+                h_name = h.get("host", "")
+                if h_name != hostname and ta_upper in h_name.upper():
+                    return h_name
 
         # Also try: BH devices matching tower_a in hostname at tower_z
         hosts = await self.jsonrpc("host.get", {
@@ -325,7 +337,8 @@ class ZabbixClient:
             h_name = h.get("host", "")
             if h_name == hostname or not h_name.upper().startswith("BH-"):
                 continue
-            if tower_z.upper() in h_name.upper():
+            h_upper = h_name.upper()
+            if any(tz.upper() in h_upper for tz in tz_variants):
                 return h_name
 
         return None
