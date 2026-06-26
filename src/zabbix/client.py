@@ -8,6 +8,7 @@ from typing import Any, Optional
 import httpx
 
 from src.config import settings
+from src.topology.hostname_parser import tower_tag_variants
 
 
 # Aviat item key suffix → normalized name
@@ -305,17 +306,24 @@ class ZabbixClient:
 
     # ── Normalization ─────────────────────────────────────────────────
 
-    async def find_far_end(self, hostname: str, tower_a: str, tower_z: str) -> Optional[str]:
+    async def find_far_end(
+        self, hostname: str, tower_a: str, tower_z: str,
+        exclude: Optional[list[str]] = None,
+    ) -> Optional[str]:
         """Find the far-end hostname by searching for BH devices at far tower.
 
         Handles -H/-V polarization suffixes: if tower_z is "TX-HOHQ-H" but
         the Zabbix tag is "TX-HOHQ", the stripped variant is tried as well.
-        """
-        def _strip_pol(t: str) -> str:
-            return t[:-2] if t.endswith(('-H', '-V')) else t
 
-        # Tower name variants (original + stripped polarization suffix)
-        tz_variants = list(dict.fromkeys([tower_z, _strip_pol(tower_z)]))
+        ``exclude`` skips specific hostnames (e.g. the companion polarization
+        device which shares both tower names but is NOT the far end).
+        """
+        excluded = {hostname.upper()}
+        if exclude:
+            excluded.update(h.upper() for h in exclude if h)
+
+        # Tower name variants (original, stripped pol, stripped state prefix)
+        tz_variants = tower_tag_variants(tower_z)
         ta_upper = tower_a.upper()
 
         # Search for BH devices at tower_z that reference tower_a
@@ -323,7 +331,7 @@ class ZabbixClient:
             far_hosts = await self.search_by_tower(tz)
             for h in far_hosts:
                 h_name = h.get("host", "")
-                if h_name != hostname and ta_upper in h_name.upper():
+                if h_name.upper() not in excluded and ta_upper in h_name.upper():
                     return h_name
 
         # Also try: BH devices matching tower_a in hostname at tower_z
@@ -335,7 +343,7 @@ class ZabbixClient:
         }) or []
         for h in hosts:
             h_name = h.get("host", "")
-            if h_name == hostname or not h_name.upper().startswith("BH-"):
+            if h_name.upper() in excluded or not h_name.upper().startswith("BH-"):
                 continue
             h_upper = h_name.upper()
             if any(tz.upper() in h_upper for tz in tz_variants):

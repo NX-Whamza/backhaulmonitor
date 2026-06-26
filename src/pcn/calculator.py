@@ -11,6 +11,7 @@ from typing import Any, Optional
 import httpx
 
 from src.config import settings
+from src.topology.hostname_parser import tower_tag_variants
 
 
 # ITU-R P.838 approximate specific attenuation at 25 mm/hr (dB/km)
@@ -249,7 +250,14 @@ class CatalogClient:
         # 2. Single-tower query with client-side filtering
         #    Use as_completed to return first successful result — avoids
         #    slow queries for non-existent towers blocking faster ones.
-        towers_to_check = [t for t in [tower_a, tower_z] if t]
+        #    Include tag variants (stripped pol suffix, state prefix).
+        towers_to_check = []
+        _seen = set()
+        for t in [tower_a, tower_z]:
+            for variant in tower_tag_variants(t):
+                if variant not in _seen:
+                    towers_to_check.append(variant)
+                    _seen.add(variant)
         if towers_to_check:
             import asyncio
             tasks = [
@@ -285,10 +293,18 @@ class CatalogClient:
             if band_candidates:
                 band = band_candidates[0]
                 guesses = []
-                for ta, tz in [(tower_a, tower_z), (tower_z, tower_a)]:
+                # Include tower name variants for hostname guessing
+                ta_vars = tower_tag_variants(tower_a)
+                tz_vars = tower_tag_variants(tower_z)
+                tower_pairs = list(dict.fromkeys(
+                    [(ta, tz) for ta in ta_vars for tz in tz_vars]
+                    + [(tz, ta) for tz in tz_vars for ta in ta_vars]
+                ))
+                for ta, tz in tower_pairs:
                     if num_suffix:
                         guesses.append(f"BH-{model}-{band}-{num_suffix}.{ta}.{tz}")
                     guesses.append(f"BH-{model}-{band}-{ta}.{tz}")
+                guesses = list(dict.fromkeys(guesses))  # deduplicate
 
                 # Run guesses in parallel
                 guess_results = await asyncio.gather(

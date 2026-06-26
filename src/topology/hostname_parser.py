@@ -113,6 +113,25 @@ class BhLinkInfo:
         return result if result != self.hostname else None
 
 
+def tower_tag_variants(tower: str) -> list[str]:
+    """Generate likely Zabbix tower tag values from a hostname tower name.
+
+    Hostname conventions use state prefixes (TX-) and polarization suffixes
+    (-H/-V) that may not be present in Zabbix tower tags.
+
+    Example: TX-HOHQ-H → ["TX-HOHQ-H", "TX-HOHQ", "HOHQ"]
+    """
+    variants = [tower]
+    # Strip -H/-V polarization suffix
+    base = tower[:-2] if tower.endswith(('-H', '-V')) else tower
+    if base != tower:
+        variants.append(base)
+    # Strip 2-letter state prefix (e.g. TX-, OK-, NM-)
+    if len(base) > 3 and base[2] == '-' and base[:2].isalpha():
+        variants.append(base[3:])
+    return list(dict.fromkeys(variants))
+
+
 _BH_RE = re.compile(
     r"^(?:z)?BH-"
     r"(?P<model>[A-Z][A-Z0-9]+)"

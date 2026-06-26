@@ -20,7 +20,7 @@ from src.weather.client import WeatherClient
 from src.pcn.calculator import CatalogClient, build_link_assessment
 from src.radio.client import RadioClient
 from src.diagnosis.engine import diagnose_link
-from src.topology.hostname_parser import parse_bh_hostname
+from src.topology.hostname_parser import parse_bh_hostname, tower_tag_variants
 
 
 @asynccontextmanager
@@ -149,21 +149,36 @@ async def api_diagnose(request: Request, hostname: str):
     # Phase 1: Run ALL queries in parallel
     async def _find_far():
         if tower_a and tower_z:
-            return await zabbix.find_far_end(hostname, tower_a, tower_z)
+            return await zabbix.find_far_end(
+                hostname, tower_a, tower_z,
+                exclude=[companion_hostname] if companion_hostname else None,
+            )
         return None
 
     async def _get_tower_coords():
+        # Try tower name variants (original, stripped pol, stripped state prefix)
+        candidates = []
+        seen = set()
         for t in [tower_a, tower_z]:
-            if t:
-                coords = await catalog.get_tower_coords(t)
-                if coords:
-                    return coords
+            for v in tower_tag_variants(t):
+                if v not in seen:
+                    candidates.append(v)
+                    seen.add(v)
+        for t in candidates:
+            coords = await catalog.get_tower_coords(t)
+            if coords:
+                return coords
         return None
 
     async def _get_companion_rf():
         if not companion_hostname or not rf_prefix:
             return None
         return await zabbix.get_rf_snapshot(companion_hostname, rf_prefix)
+
+    async def _resolve_companion():
+        if not companion_hostname:
+            return None
+        return await zabbix.resolve_host(companion_hostname)
 
     phase1 = await asyncio.gather(
         zabbix.get_rf_snapshot(hostname, rf_prefix),      # 0
@@ -175,6 +190,7 @@ async def api_diagnose(request: Request, hostname: str):
         _find_far(),                                       # 6
         _get_tower_coords(),                               # 7
         _get_companion_rf(),                               # 8
+        _resolve_companion(),                              # 9
         return_exceptions=True,
     )
 
@@ -187,8 +203,10 @@ async def api_diagnose(request: Request, hostname: str):
     zabbix_far_end = phase1[6] if not isinstance(phase1[6], Exception) else None
     tower_coords = phase1[7] if not isinstance(phase1[7], Exception) else None
     comp_rf = phase1[8] if not isinstance(phase1[8], Exception) else None
+    comp_host = phase1[9] if not isinstance(phase1[9], Exception) else None
 
     host_ip = host_data.get("ip") if host_data else None
+    comp_ip = comp_host.get("ip") if comp_host else None
     if zabbix_far_end:
         far_end = zabbix_far_end
 
@@ -268,6 +286,12 @@ async def api_diagnose(request: Request, hostname: str):
     if not far_end_ip and comp_far_ip:
         far_end_ip = comp_far_ip
 
+    # Drop computed far-end hostname if it couldn't be verified in Zabbix
+    # (the parser's guess is often wrong for non-standard hostname formats)
+    if not zabbix_far_end and not far_end_ip:
+        far_end = None
+        comp_far = None
+
     # Sanitize zero RF values when SNMP is down
     snmp_down = _snmp_is_down(problems)
     rf_snapshot = _sanitize_rf(rf_snapshot, snmp_down)
@@ -322,7 +346,9 @@ async def api_diagnose(request: Request, hostname: str):
             "far_end": far_end if far_end != hostname else None,
             "far_end_ip": far_end_ip,
             "companion": companion_hostname,
+            "companion_ip": comp_ip,
             "companion_far_end": comp_far,
+            "companion_far_end_ip": comp_far_ip,
             "technology": link_info.technology if link_info else None,
             "rain_sensitivity": link_info.rain_sensitivity if link_info else None,
         },

@@ -364,7 +364,8 @@
 
             // Link info
             const li = data.link_info;
-            document.getElementById('link-info').innerHTML = renderMetrics([
+            const isPaired = !!li.companion;
+            let linkRows = [
                 ['Hostname', data.hostname],
                 ['IP', data.ip ? radioLink(data.ip) : 'N/A'],
                 ['Model', li.model],
@@ -374,10 +375,24 @@
                 ['Rain Sensitivity', li.rain_sensitivity],
                 ['Tower A', li.tower_a],
                 ['Tower Z', li.tower_z],
-                ['Far End', li.far_end],
-                ['Far End IP', li.far_end_ip ? radioLink(li.far_end_ip) : 'N/A'],
-                ...(li.companion ? [['Companion (pol)', li.companion]] : []),
-            ]);
+            ];
+            if (isPaired) {
+                linkRows.push(
+                    ['───── Near End ─────', ''],
+                    ['H-Pol', radioLink(data.ip)],
+                    ['V-Pol', li.companion_ip ? radioLink(li.companion_ip) : 'N/A'],
+                    ['───── Far End ─────', ''],
+                    ['Hostname', li.far_end || 'Not found'],
+                    ['H-Pol', li.far_end_ip ? radioLink(li.far_end_ip) : 'N/A'],
+                    ['V-Pol', li.companion_far_end_ip ? radioLink(li.companion_far_end_ip) : 'N/A'],
+                );
+            } else {
+                linkRows.push(
+                    ['Far End', li.far_end || 'Not found'],
+                    ['Far End IP', li.far_end_ip ? radioLink(li.far_end_ip) : 'N/A'],
+                );
+            }
+            document.getElementById('link-info').innerHTML = renderMetrics(linkRows);
 
             // RF snapshot
             const rf = data.rf_snapshot || {};
@@ -607,7 +622,7 @@
             const fe = data.far_end_rf || {};
 
             let lines = [];
-            lines.push(`BH Diagnosis: ${data.hostname} (${data.ip || '?'})`);
+            lines.push(`BH Diagnosis: ${data.hostname} (${data.ip || '?'})${li.companion_ip ? ' / V-pol: ' + li.companion_ip : ''}`);
             lines.push(`${li.tower_a || '?'} → ${li.tower_z || '?'} | ${li.model || '?'} ${li.band_ghz ? li.band_ghz + 'GHz' : ''} ${rf.link_type || ''}`);
             lines.push(`Verdict: ${formatVerdict(v.verdict)}`);
             lines.push('');
