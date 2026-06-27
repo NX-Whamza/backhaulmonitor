@@ -539,12 +539,17 @@
 
             document.getElementById('pcn-info').innerHTML = renderMetrics(pcnRows);
 
-            // Update PCN tooltip with matched host
+            // Update PCN tooltip with source attribution
             const pcnTip = document.getElementById('pcn-source-tip');
             if (pcnTip) {
                 const parts = [];
-                if (hasPcn) parts.push('PCN: ' + pcn.host + ' (codexCatalog SMAP)');
-                else parts.push('PCN: not found in codexCatalog');
+                if (hasPcn) {
+                    const src = pcn._pcn_source || 'codexCatalog';
+                    const match = pcn.host ? pcn.host : (pcn.site1 + ' \u2194 ' + pcn.site2);
+                    parts.push('PCN: ' + match + ' (' + src + ')');
+                } else {
+                    parts.push('PCN: not found in codexCatalog');
+                }
                 if (bl.baseline != null) parts.push('Baseline: Zabbix 7-day median (' + bl.sample_hours + 'h samples)');
                 pcnTip.textContent = parts.join(' \u2022 ');
             }

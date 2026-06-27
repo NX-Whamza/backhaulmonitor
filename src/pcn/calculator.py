@@ -253,23 +253,31 @@ class CatalogClient:
         ta_variants = tower_tag_variants(tower_a) if tower_a else []
         tz_variants = tower_tag_variants(tower_z) if tower_z else []
 
+        async def _tagged(coro, source: str):
+            r = await coro
+            if r:
+                r["_pcn_source"] = source
+            return r
+
         tasks = [
-            asyncio.create_task(self._query_pcn_by_host(hostname)),
+            asyncio.create_task(_tagged(self._query_pcn_by_host(hostname), "SMAP bh_report_history")),
             # bh_PCN_data — small CoMSearch table, fast site-pair lookup
-            asyncio.create_task(self._query_pcn_data(tower_a, tower_z)),
+            asyncio.create_task(_tagged(self._query_pcn_data(tower_a, tower_z), "CoMSearch (bh_PCN_data)")),
         ]
         _seen: set[str] = set()
         for t in ta_variants:
             if t not in _seen:
-                tasks.append(asyncio.create_task(
-                    self._query_pcn_by_tower(t, model_prefix, tz_variants)
-                ))
+                tasks.append(asyncio.create_task(_tagged(
+                    self._query_pcn_by_tower(t, model_prefix, tz_variants),
+                    "SMAP bh_report_history",
+                )))
                 _seen.add(t)
         for t in tz_variants:
             if t not in _seen:
-                tasks.append(asyncio.create_task(
-                    self._query_pcn_by_tower(t, model_prefix, ta_variants)
-                ))
+                tasks.append(asyncio.create_task(_tagged(
+                    self._query_pcn_by_tower(t, model_prefix, ta_variants),
+                    "SMAP bh_report_history",
+                )))
                 _seen.add(t)
 
         try:
