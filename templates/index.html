@@ -125,7 +125,46 @@
             color: #4fc3f7;
             margin-bottom: 12px;
             letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
+        .info-tip {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px; height: 16px;
+            border-radius: 50%;
+            border: 1px solid #546e7a;
+            font-size: 10px;
+            color: #78909c;
+            cursor: help;
+            position: relative;
+            font-style: normal;
+            font-weight: 400;
+            text-transform: none;
+            letter-spacing: 0;
+            flex-shrink: 0;
+        }
+        .info-tip:hover { border-color: #4fc3f7; color: #4fc3f7; }
+        .info-tip .tip-text {
+            display: none;
+            position: absolute;
+            bottom: calc(100% + 8px);
+            left: 50%;
+            transform: translateX(-50%);
+            background: #243442;
+            border: 1px solid #2d4a5e;
+            color: #b0bec5;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            white-space: nowrap;
+            z-index: 20;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            line-height: 1.4;
+        }
+        .info-tip:hover .tip-text { display: block; }
         .metric-row {
             display: flex;
             justify-content: space-between;
@@ -197,23 +236,23 @@
             <!-- Link info + RF cards -->
             <div class="card-grid">
                 <div class="card" id="link-card">
-                    <h3>Link Information</h3>
+                    <h3>Link Information <i class="info-tip">i<span class="tip-text">Hostname parser + Zabbix host tags</span></i></h3>
                     <div id="link-info"></div>
                 </div>
                 <div class="card" id="rf-card">
-                    <h3>RF Telemetry (Near End)</h3>
+                    <h3>RF Telemetry (Near End) <i class="info-tip">i<span class="tip-text">Live SNMP via Zabbix</span></i></h3>
                     <div id="rf-info"></div>
                 </div>
                 <div class="card" id="pcn-card">
-                    <h3>Link Design (FCC / Baseline)</h3>
+                    <h3>Link Design (FCC / Baseline) <i class="info-tip">i<span class="tip-text" id="pcn-source-tip">PCN from codexCatalog SMAP &bull; Baseline from Zabbix 7-day trend</span></i></h3>
                     <div id="pcn-info"></div>
                 </div>
                 <div class="card" id="far-end-card">
-                    <h3>Far End RF</h3>
+                    <h3>Far End RF <i class="info-tip">i<span class="tip-text">Live SNMP via Zabbix (far-end device)</span></i></h3>
                     <div id="far-end-info"></div>
                 </div>
                 <div class="card" id="weather-card">
-                    <h3>Weather Conditions</h3>
+                    <h3>Weather Conditions <i class="info-tip">i<span class="tip-text">Open-Meteo API &bull; Current + 6h rain history</span></i></h3>
                     <div id="weather-info"></div>
                 </div>
             </div>
@@ -499,6 +538,16 @@
             }
 
             document.getElementById('pcn-info').innerHTML = renderMetrics(pcnRows);
+
+            // Update PCN tooltip with matched host
+            const pcnTip = document.getElementById('pcn-source-tip');
+            if (pcnTip) {
+                const parts = [];
+                if (hasPcn) parts.push('PCN: ' + pcn.host + ' (codexCatalog SMAP)');
+                else parts.push('PCN: not found in codexCatalog');
+                if (bl.baseline != null) parts.push('Baseline: Zabbix 7-day median (' + bl.sample_hours + 'h samples)');
+                pcnTip.textContent = parts.join(' \u2022 ');
+            }
 
             // Far end
             const fe = data.far_end_rf || {};

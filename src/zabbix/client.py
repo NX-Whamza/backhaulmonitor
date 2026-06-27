@@ -315,6 +315,11 @@ class ZabbixClient:
         Handles -H/-V polarization suffixes: if tower_z is "TX-HOHQ-H" but
         the Zabbix tag is "TX-HOHQ", the stripped variant is tried as well.
 
+        Also resolves the near-end host's Zabbix tower tag and adds it to
+        the search variants — this bridges cases where the hostname tower
+        name differs from the Zabbix tag (e.g. "TX-GAINESVILLE-NO-1-H" in
+        hostname vs "GAINESVILLENORTH" tag).
+
         ``exclude`` skips specific hostnames (e.g. the companion polarization
         device which shares both tower names but is NOT the far end).
         """
@@ -324,7 +329,17 @@ class ZabbixClient:
 
         # Tower name variants (original, stripped pol, stripped state prefix)
         tz_variants = tower_tag_variants(tower_z)
+        ta_variants = tower_tag_variants(tower_a)
         ta_upper = tower_a.upper()
+
+        # Resolve near-end host to get the Zabbix tower tag — it may differ
+        # from the hostname tower name and is needed to match far-end hostnames
+        # that use the tag form (e.g. "GAINESVILLENORTH" vs "TX-GAINESVILLE-NO-1-H").
+        near_host = await self.resolve_host(hostname)
+        if near_host:
+            near_tower_tag = near_host.get("tags_dict", {}).get("tower", "")
+            if near_tower_tag and near_tower_tag not in tz_variants:
+                tz_variants.append(near_tower_tag)
 
         # Search for BH devices at tower_z that reference tower_a
         for tz in tz_variants:
@@ -334,20 +349,59 @@ class ZabbixClient:
                 if h_name.upper() not in excluded and ta_upper in h_name.upper():
                     return h_name
 
-        # Also try: BH devices matching tower_a in hostname at tower_z
+        # Also try: BH devices matching tower_a in hostname that reference tower_z
         hosts = await self.jsonrpc("host.get", {
             "search": {"host": tower_a},
             "output": ["hostid", "host"],
             "selectTags": "extend",
             "limit": 30,
         }) or []
-        for h in hosts:
-            h_name = h.get("host", "")
-            if h_name.upper() in excluded or not h_name.upper().startswith("BH-"):
+        candidates = [
+            h for h in hosts
+            if h.get("host", "").upper() not in excluded
+            and h.get("host", "").upper().startswith("BH-")
+        ]
+        # Pass 1: prefer candidates whose hostname contains a tower_z variant
+        for h in candidates:
+            if any(tz.upper() in h["host"].upper() for tz in tz_variants):
+                return h["host"]
+        # Pass 2: fall back to candidates at tower_a (far-end lives there)
+        ta_tag_set = {v.upper() for v in ta_variants}
+        for h in candidates:
+            h_tags = {t["tag"]: t["value"] for t in h.get("tags", [])}
+            h_tower = h_tags.get("tower", "").upper()
+            if h_tower and h_tower in ta_tag_set:
+                return h["host"]
+
+        # Strategy 3: Reverse search — find hosts with tower_z in hostname
+        # at a DIFFERENT tower whose tag relates to tower_a.
+        # Handles cases where near-end tower_a name doesn't match far-end
+        # conventions (e.g. near-end says "HOHQ2" but far-end is at "HOHQ").
+        near_tower = ""
+        if near_host:
+            near_tower = near_host.get("tags_dict", {}).get("tower", "").upper()
+        for tz in tz_variants:
+            if len(tz) < 4:
                 continue
-            h_upper = h_name.upper()
-            if any(tz.upper() in h_upper for tz in tz_variants):
-                return h_name
+            rev_hosts = await self.jsonrpc("host.get", {
+                "search": {"host": tz},
+                "output": ["hostid", "host"],
+                "selectTags": "extend",
+                "limit": 30,
+            }) or []
+            rev_candidates = [
+                h for h in rev_hosts
+                if h.get("host", "").upper() not in excluded
+                and h.get("host", "").upper().startswith("BH-")
+            ]
+            for h in rev_candidates:
+                h_tags = {t["tag"]: t["value"] for t in h.get("tags", [])}
+                h_tower = h_tags.get("tower", "").upper()
+                if not h_tower or h_tower == near_tower:
+                    continue
+                # Tower tag should relate to tower_a (substring either way)
+                if ta_upper in h_tower or h_tower in ta_upper:
+                    return h["host"]
 
         return None
 
@@ -410,6 +464,7 @@ class ZabbixClient:
 
         # Add modulation names to all radios
         is_aviat = "av.wireless" in rf_key_prefix
+        is_cn820 = "820.wireless" in rf_key_prefix
         for rid, r in radio_items.items():
             if is_aviat:
                 rxmod = r.get("rxmod")
@@ -421,6 +476,11 @@ class ZabbixClient:
                     r["maxmod_name"] = AVIAT_MOD_NAMES.get(maxmod, f"Mod {maxmod}")
                 if minmod is not None:
                     r["minmod_name"] = AVIAT_MOD_NAMES.get(minmod, f"Mod {minmod}")
+            elif is_cn820:
+                # CN820 reports direct QAM values (e.g. 1024, 512, 256)
+                rxmod = r.get("rxmod")
+                if rxmod is not None:
+                    r["rxmod_name"] = f"{rxmod} QAM"
 
         sorted_ids = sorted(radio_items.keys())
         result = radio_items[sorted_ids[0]]

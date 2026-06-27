@@ -251,19 +251,27 @@ class CatalogClient:
         #    Use as_completed to return first successful result — avoids
         #    slow queries for non-existent towers blocking faster ones.
         #    Include tag variants (stripped pol suffix, state prefix).
-        towers_to_check = []
-        _seen = set()
-        for t in [tower_a, tower_z]:
-            for variant in tower_tag_variants(t):
-                if variant not in _seen:
-                    towers_to_check.append(variant)
-                    _seen.add(variant)
-        if towers_to_check:
+        #    Pass other-tower variants so results can be cross-referenced
+        #    against the correct link (avoids returning a different link
+        #    at the same tower).
+        ta_variants = tower_tag_variants(tower_a) if tower_a else []
+        tz_variants = tower_tag_variants(tower_z) if tower_z else []
+        if ta_variants or tz_variants:
             import asyncio
-            tasks = [
-                asyncio.create_task(self._query_pcn_by_tower(t, model_prefix))
-                for t in towers_to_check
-            ]
+            tasks = []
+            _seen: set[str] = set()
+            for t in ta_variants:
+                if t not in _seen:
+                    tasks.append(asyncio.create_task(
+                        self._query_pcn_by_tower(t, model_prefix, tz_variants)
+                    ))
+                    _seen.add(t)
+            for t in tz_variants:
+                if t not in _seen:
+                    tasks.append(asyncio.create_task(
+                        self._query_pcn_by_tower(t, model_prefix, ta_variants)
+                    ))
+                    _seen.add(t)
             try:
                 for coro in asyncio.as_completed(tasks):
                     try:
@@ -348,9 +356,19 @@ class CatalogClient:
         "`distance(mi)`, `ground1(ft)`, `ground2(ft)`, band "
     )
 
-    async def _query_pcn_by_tower(self, tower: str, model_prefix: str = "") -> Optional[dict]:
-        """Query by single tower name, filter by model client-side."""
+    async def _query_pcn_by_tower(
+        self, tower: str, model_prefix: str = "",
+        other_towers: list[str] | None = None,
+    ) -> Optional[dict]:
+        """Query by single tower name, filter by model + other tower client-side.
+
+        ``other_towers`` is a list of tower name variants for the opposite end
+        of the link.  When provided, results where the non-queried site column
+        matches one of these variants are strongly preferred — this prevents
+        returning the wrong link when a tower has multiple BH devices.
+        """
         safe_tower = tower.replace("'", "''")
+        ot_upper = {t.upper() for t in other_towers} if other_towers else set()
 
         # Try site1, then site2
         for col in ["site1", "site2"]:
@@ -362,15 +380,37 @@ class CatalogClient:
             if data and data.get("rows"):
                 columns = data.get("columns", [])
                 rows = data["rows"]
-                # Filter for matching model prefix
+                parsed = [
+                    dict(zip(columns, r)) if isinstance(r, list) else r
+                    for r in rows
+                ]
+
+                # Filter by model prefix
                 if model_prefix:
                     mp = model_prefix.upper()
-                    for row in rows:
-                        rd = dict(zip(columns, row)) if isinstance(row, list) else row
-                        if (rd.get("host") or "").upper().startswith(mp):
+                    candidates = [
+                        rd for rd in parsed
+                        if (rd.get("host") or "").upper().startswith(mp)
+                    ]
+                else:
+                    candidates = parsed
+
+                if not candidates:
+                    continue
+
+                # Prefer rows where the other site matches the opposite tower
+                if ot_upper:
+                    other_col = "site2" if col == "site1" else "site1"
+                    for rd in candidates:
+                        if (rd.get(other_col) or "").upper() in ot_upper:
                             return rd
-                # No model filter or no match — return first
-                return dict(zip(columns, rows[0])) if isinstance(rows[0], list) else rows[0]
+                    # Don't fall back — returning a different link's data
+                    # is worse than returning nothing.  Let the caller try
+                    # other tower variants or fall through to tier 3.
+                    continue
+
+                # No cross-reference — fall back to first model match
+                return candidates[0]
 
         return None
 
