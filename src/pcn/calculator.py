@@ -484,7 +484,10 @@ class CatalogClient:
                 for r in data["rows"]
             ]
             # Cross-reference: the OTHER site should relate to the
-            # opposite tower (exact or substring match either way).
+            # opposite tower.  Checks (in order of strength):
+            #   1. Exact match
+            #   2. Substring either way  (HOHQ ↔ HOHQ2)
+            #   3. Long common prefix    (TX-WEATHERFORD-REVER ↔ TX-WEATHERFORD-FX-REVERE)
             other_variants = tz_variants if tower in ta_variants else ta_variants
             for rd in rows:
                 s1 = (rd.get("site1") or "").upper()
@@ -493,6 +496,15 @@ class CatalogClient:
                 for ov in other_variants:
                     ov_u = ov.upper()
                     if ov_u == other_site or ov_u in other_site or other_site in ov_u:
+                        return rd
+                    # Common-prefix match: ≥12 shared leading chars is strong
+                    pfx = min(len(ov_u), len(other_site))
+                    common = 0
+                    for a, b in zip(ov_u, other_site):
+                        if a != b:
+                            break
+                        common += 1
+                    if common >= 12 or (pfx > 0 and common >= pfx * 0.75):
                         return rd
         return None
 
