@@ -253,7 +253,11 @@ class CatalogClient:
         ta_variants = tower_tag_variants(tower_a) if tower_a else []
         tz_variants = tower_tag_variants(tower_z) if tower_z else []
 
-        tasks = [asyncio.create_task(self._query_pcn_by_host(hostname))]
+        tasks = [
+            asyncio.create_task(self._query_pcn_by_host(hostname)),
+            # bh_PCN_data — small CoMSearch table, fast site-pair lookup
+            asyncio.create_task(self._query_pcn_data(tower_a, tower_z)),
+        ]
         _seen: set[str] = set()
         for t in ta_variants:
             if t not in _seen:
@@ -408,6 +412,80 @@ class CatalogClient:
                 # No cross-reference — fall back to first model match
                 return candidates[0]
 
+        return None
+
+    # Columns shared by bh_report_history and bh_PCN_data
+    _PCN_COORD_COLUMNS = (
+        "site1, site2, radiomodel1, radiomodel2, "
+        "mainmodel1, mainmodel2, `maindiameter1(ft)`, `maindiameter2(ft)`, "
+        "`maxPower1(dBm)`, `maxPower2(dBm)`, "
+        "`coordPower1(dBm)`, `coordPower2(dBm)`, "
+        "`rxmaxPower1(dBm)`, `rxmaxPower2(dBm)`, "
+        "`rxcoordPower1(dBm)`, `rxcoordPower2(dBm)`, "
+        "`azimuth12(deg)`, `azimuth21(deg)`, "
+        "`distance(mi)`, `ground1(ft)`, `ground2(ft)`, band"
+    )
+
+    @staticmethod
+    def _pcn_tower_variants(tower: str) -> list[str]:
+        """Broader tower name variants for bh_PCN_data matching.
+
+        Extends tower_tag_variants with directional-suffix stripping:
+        TX-CALLISBURG-NO-1-H → [..., CALLISBURG-NO-1, CALLISBURG]
+        """
+        import re
+        variants = list(tower_tag_variants(tower))
+        # Strip trailing direction+number: -NO-1, -CN-1, -SO-2, -EA-1, etc.
+        for v in list(variants):
+            stripped = re.sub(r"-(NO|SO|EA|WE|NE|NW|SE|SW|CN|FX)-\d+$", "", v)
+            if stripped and stripped != v and stripped not in variants:
+                variants.append(stripped)
+        return variants
+
+    async def _query_pcn_data(
+        self, tower_a: str, tower_z: str,
+    ) -> Optional[dict]:
+        """Query bh_PCN_data (CoMSearch FCC coordination) by tower pair.
+
+        This table is small (~5k rows) so we can afford broader matching:
+        query by one tower, then cross-reference the other tower in
+        results using substring matching (handles HOHQ2↔HOHQ,
+        CALLISBURG-NO-1↔CALLISBURG style mismatches).
+        """
+        ta_variants = self._pcn_tower_variants(tower_a)
+        tz_variants = self._pcn_tower_variants(tower_z)
+        all_variants = list(dict.fromkeys(ta_variants + tz_variants))
+
+        for tower in all_variants:
+            safe = tower.replace("'", "''")
+            data = await self._call_tool("smap__query", {
+                "repo_path": "nextlink",
+                "source_name": "smap",
+                "sql": (
+                    f"SELECT {self._PCN_COORD_COLUMNS} "
+                    f"FROM bh_PCN_data WHERE "
+                    f"site1 = '{safe}' OR site2 = '{safe}' "
+                    "LIMIT 10"
+                ),
+            })
+            if not data or not data.get("rows"):
+                continue
+            columns = data.get("columns", [])
+            rows = [
+                dict(zip(columns, r)) if isinstance(r, list) else r
+                for r in data["rows"]
+            ]
+            # Cross-reference: the OTHER site should relate to the
+            # opposite tower (exact or substring match either way).
+            other_variants = tz_variants if tower in ta_variants else ta_variants
+            for rd in rows:
+                s1 = (rd.get("site1") or "").upper()
+                s2 = (rd.get("site2") or "").upper()
+                other_site = s2 if tower.upper() == s1 else s1
+                for ov in other_variants:
+                    ov_u = ov.upper()
+                    if ov_u == other_site or ov_u in other_site or other_site in ov_u:
+                        return rd
         return None
 
     async def get_tower_coords(self, tower: str) -> Optional[dict]:
