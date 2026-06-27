@@ -24,15 +24,22 @@ FAMILY_MAP: dict[str, str] = {
     "CN820S": "cambium_cn820",
     "CN820C": "cambium_cn820",
     "CN850C": "cambium_cn820",
+    "820S": "cambium_cn820",     # abbreviated hostname variant
+    "820C": "cambium_cn820",     # abbreviated hostname variant
+    "850C": "cambium_cn820",     # abbreviated hostname variant
     "CNPTP450": "cambium_ptp",
     "CNF16": "cambium_force",
+    "CNF25": "cambium_force",
+    "CNF300": "cambium_force",
     "CNF30025": "cambium_force",
+    "CNF316": "cambium_force",
     "CNEP3K": "cambium_epmp",
     "UBAF11FX": "ubiquiti_af",
     "UBAF5XHD": "ubiquiti_af",
     "UBWPRO": "ubiquiti_wave",
     "UPBAC": "ubiquiti_pb",
     "UBPB5AC": "ubiquiti_pb",
+    "UBNBAC5": "ubiquiti_pb",
     "SK2500": "siklu",
     "SK1200": "siklu",
     "SK8010": "siklu",
@@ -134,7 +141,7 @@ def tower_tag_variants(tower: str) -> list[str]:
 
 _BH_RE = re.compile(
     r"^(?:z)?BH-"
-    r"(?P<model>[A-Z][A-Z0-9]+)"
+    r"(?P<model>[A-Z0-9][A-Z0-9]+)"
     r"(?:-(?P<band>\d{1,2}))?"
     r"(?:-(?P<suffix>[^.]+))?"
     r"(?:\.(?P<rest>.+))?$",
