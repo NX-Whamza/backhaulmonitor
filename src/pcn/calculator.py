@@ -187,7 +187,7 @@ class CatalogClient:
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if settings.smap_auth_header:
             headers["Authorization"] = settings.smap_auth_header
-        self._client = httpx.AsyncClient(timeout=10.0, headers=headers)
+        self._client = httpx.AsyncClient(timeout=8.0, headers=headers)
         self._req_id = 0
 
     async def _call_tool(self, tool_name: str, arguments: dict) -> Optional[dict]:
@@ -224,7 +224,7 @@ class CatalogClient:
         try:
             return await asyncio.wait_for(
                 self._get_pcn_inner(hostname, tower_a, tower_z),
-                timeout=10.0,
+                timeout=15.0,
             )
         except asyncio.TimeoutError:
             return None
@@ -234,7 +234,12 @@ class CatalogClient:
         1. Exact hostname match
         2. Single-tower query (site1/site2) with client-side model filtering
         3. Hostname guessing with exact matches
+
+        Tier 1 and 2 run in parallel — the exact-host query can take 5-10s
+        when it misses, so we don't block tower queries behind it.
         """
+        import asyncio
+
         # Extract model prefix for client-side filtering
         dot_idx = hostname.find(".")
         prefix = hostname[:dot_idx] if dot_idx > 0 else hostname
@@ -242,49 +247,40 @@ class CatalogClient:
         model = parts[1].upper() if len(parts) >= 2 else ""
         model_prefix = f"BH-{model}" if model else ""
 
-        # 1. Try exact hostname
-        result = await self._query_pcn_by_host(hostname)
-        if result:
-            return result
-
-        # 2. Single-tower query with client-side filtering
-        #    Use as_completed to return first successful result — avoids
-        #    slow queries for non-existent towers blocking faster ones.
-        #    Include tag variants (stripped pol suffix, state prefix).
-        #    Pass other-tower variants so results can be cross-referenced
-        #    against the correct link (avoids returning a different link
-        #    at the same tower).
+        # Build ALL search tasks (tier 1 + tier 2) and race them.
+        # Exact-host queries can take 5-10s on a miss, so running them
+        # in parallel with tower queries prevents timeout starvation.
         ta_variants = tower_tag_variants(tower_a) if tower_a else []
         tz_variants = tower_tag_variants(tower_z) if tower_z else []
-        if ta_variants or tz_variants:
-            import asyncio
-            tasks = []
-            _seen: set[str] = set()
-            for t in ta_variants:
-                if t not in _seen:
-                    tasks.append(asyncio.create_task(
-                        self._query_pcn_by_tower(t, model_prefix, tz_variants)
-                    ))
-                    _seen.add(t)
-            for t in tz_variants:
-                if t not in _seen:
-                    tasks.append(asyncio.create_task(
-                        self._query_pcn_by_tower(t, model_prefix, ta_variants)
-                    ))
-                    _seen.add(t)
-            try:
-                for coro in asyncio.as_completed(tasks):
-                    try:
-                        r = await coro
-                        if r:
-                            for t in tasks:
-                                t.cancel()
-                            return r
-                    except Exception:
-                        continue
-            finally:
-                for t in tasks:
-                    t.cancel()
+
+        tasks = [asyncio.create_task(self._query_pcn_by_host(hostname))]
+        _seen: set[str] = set()
+        for t in ta_variants:
+            if t not in _seen:
+                tasks.append(asyncio.create_task(
+                    self._query_pcn_by_tower(t, model_prefix, tz_variants)
+                ))
+                _seen.add(t)
+        for t in tz_variants:
+            if t not in _seen:
+                tasks.append(asyncio.create_task(
+                    self._query_pcn_by_tower(t, model_prefix, ta_variants)
+                ))
+                _seen.add(t)
+
+        try:
+            for coro in asyncio.as_completed(tasks):
+                try:
+                    r = await coro
+                    if r:
+                        for t in tasks:
+                            t.cancel()
+                        return r
+                except Exception:
+                    continue
+        finally:
+            for t in tasks:
+                t.cancel()
 
         # 3. Hostname guessing — limited to most likely patterns only
         if tower_a and tower_z and model:
