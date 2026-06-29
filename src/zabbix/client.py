@@ -484,7 +484,15 @@ class ZabbixClient:
                     r["rxmod_name"] = f"{rxmod} QAM"
 
         sorted_ids = sorted(radio_items.keys())
-        result = radio_items[sorted_ids[0]]
+        # Pick the first ACTIVE carrier as primary — skip carriers with
+        # zero/null RSL (inactive in XPIC/2+0 configs)
+        primary_id = sorted_ids[0]
+        for rid in sorted_ids:
+            rsl = radio_items[rid].get("rsl")
+            if rsl is not None and rsl != 0 and rsl != 0.0:
+                primary_id = rid
+                break
+        result = radio_items[primary_id]
         result["link_type"] = tags.get("link_type")
         result["max_capacity"] = tags.get("max_capacity")
         result["radio_count"] = len(sorted_ids)
