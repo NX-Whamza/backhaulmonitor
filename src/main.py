@@ -9,8 +9,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Path, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Path, Query, Request, Depends, HTTPException
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -24,6 +24,10 @@ from src.radio.client import RadioClient
 from src.diagnosis.engine import diagnose_link
 from src.topology.hostname_parser import parse_bh_hostname, tower_tag_variants
 from src.feedback.store import init_db, save_feedback, check_recent_feedback, get_verdict_accuracy, blend_confidence
+from src.auth import (
+    init_auth_db, check_login, validate_session, end_session,
+    create_api_key, validate_api_key, list_api_keys, revoke_api_key,
+)
 from src.schemas import (
     DiagnoseResponse,
     FeedbackResponse,
@@ -62,6 +66,7 @@ OPENAPI_TAGS = [
 async def lifespan(app: FastAPI):
     # Startup
     init_db()
+    init_auth_db()
     app.state.zabbix = ZabbixClient()
     app.state.weather = WeatherClient()
     app.state.catalog = CatalogClient()
@@ -138,6 +143,97 @@ async def health():
     return {"status": "ok"}
 
 
+# ── API key validation ────────────────────────────────────────────────
+
+def verify_api_key(request: Request) -> None:
+    """Dependency: validate X-API-Key header if present.
+
+    - Browser requests from the UI (no header) pass through.
+    - External requests with X-API-Key must provide a valid key.
+    """
+    key = request.headers.get("x-api-key")
+    if key is None:
+        # No key header — allow (UI / internal use)
+        return
+    if not validate_api_key(key):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+# ── Admin routes ─────────────────────────────────────────────────────
+
+def _get_session(request: Request) -> str | None:
+    return request.cookies.get("bhm_session")
+
+
+@app.get("/admin/login", response_class=HTMLResponse, include_in_schema=False)
+async def admin_login_page(request: Request):
+    return templates.TemplateResponse(request, "login.html", {"error": None})
+
+
+@app.post("/admin/login", response_class=HTMLResponse, include_in_schema=False)
+async def admin_login(request: Request):
+    form = await request.form()
+    username = form.get("username", "")
+    password = form.get("password", "")
+
+    token = check_login(username, password)
+    if not token:
+        return templates.TemplateResponse(request, "login.html", {
+            "error": "Invalid credentials",
+        })
+
+    response = RedirectResponse("/admin", status_code=303)
+    response.set_cookie("bhm_session", token, httponly=True, samesite="lax", max_age=86400)
+    return response
+
+
+@app.get("/admin/logout", include_in_schema=False)
+async def admin_logout(request: Request):
+    token = _get_session(request)
+    if token:
+        end_session(token)
+    response = RedirectResponse("/admin/login", status_code=303)
+    response.delete_cookie("bhm_session")
+    return response
+
+
+@app.get("/admin", response_class=HTMLResponse, include_in_schema=False)
+async def admin_page(request: Request):
+    token = _get_session(request)
+    if not token or not validate_session(token):
+        return RedirectResponse("/admin/login", status_code=303)
+    return templates.TemplateResponse(request, "admin.html", {})
+
+
+@app.get("/admin/api/keys", include_in_schema=False)
+async def admin_list_keys(request: Request):
+    token = _get_session(request)
+    if not token or not validate_session(token):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return {"keys": list_api_keys()}
+
+
+@app.post("/admin/api/keys", include_in_schema=False)
+async def admin_create_key(request: Request):
+    token = _get_session(request)
+    if not token or not validate_session(token):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    body = await request.json()
+    label = body.get("label", "").strip()
+    if not label:
+        raise HTTPException(status_code=400, detail="Label is required")
+    return create_api_key(label)
+
+
+@app.delete("/admin/api/keys/{key_id}", include_in_schema=False)
+async def admin_revoke_key(request: Request, key_id: int):
+    token = _get_session(request)
+    if not token or not validate_session(token):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    revoke_api_key(key_id)
+    return {"revoked": True}
+
+
 # ── API endpoints ─────────────────────────────────────────────────────
 
 def _snmp_is_down(problems: list) -> bool:
@@ -200,6 +296,7 @@ def _merge_companion_rf(
     "/api/diagnose/{hostname}",
     response_model=DiagnoseResponse,
     tags=["Diagnostics"],
+    dependencies=[Depends(verify_api_key)],
     summary="Full link diagnosis",
     description="""Run a complete diagnostic on a backhaul link.
 
@@ -471,6 +568,7 @@ def _is_ip(q: str) -> bool:
     "/api/search",
     response_model=SearchResponse,
     tags=["Discovery"],
+    dependencies=[Depends(verify_api_key)],
     summary="Search BH devices",
     description="""Search by hostname, tower name, or IP address.
 
@@ -531,6 +629,7 @@ async def api_search(
     "/api/tower/{tower}",
     response_model=TowerResponse,
     tags=["Discovery"],
+    dependencies=[Depends(verify_api_key)],
     summary="List devices at a tower",
     description="""List all BH devices at a tower site.
 
@@ -579,6 +678,7 @@ class FeedbackIn(BaseModel):
     "/api/feedback",
     response_model=FeedbackResponse,
     tags=["Feedback"],
+    dependencies=[Depends(verify_api_key)],
     summary="Submit diagnosis feedback",
     description="""Record whether a diagnosis was accurate or not.
 
@@ -621,6 +721,7 @@ async def api_feedback(body: FeedbackIn):
     "/api/rf/{hostname}",
     response_model=RfSnapshotResponse,
     tags=["Telemetry"],
+    dependencies=[Depends(verify_api_key)],
     summary="Raw RF snapshot",
     description="""Current RF telemetry for a BH device, pulled from Zabbix SNMP.
 

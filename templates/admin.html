@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin — Backhaul Monitor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f1923;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .header {
+            background: #1a2733;
+            border-bottom: 2px solid #2d4a5e;
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+        .header h1 { font-size: 20px; color: #4fc3f7; }
+        .header .subtitle { font-size: 13px; color: #78909c; }
+        .header-right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+        .header-right a {
+            color: #78909c;
+            text-decoration: none;
+            font-size: 13px;
+            padding: 6px 12px;
+            border: 1px solid #2d4a5e;
+            border-radius: 4px;
+        }
+        .header-right a:hover { color: #4fc3f7; border-color: #4fc3f7; }
+
+        .content { max-width: 800px; margin: 32px auto; padding: 0 24px; }
+
+        .section {
+            background: #1a2733;
+            border: 1px solid #2d4a5e;
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        .section h2 {
+            font-size: 16px;
+            color: #4fc3f7;
+            margin-bottom: 16px;
+        }
+
+        .create-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .create-row input {
+            flex: 1;
+            padding: 10px 14px;
+            font-size: 14px;
+            background: #0f1923;
+            border: 1px solid #2d4a5e;
+            border-radius: 6px;
+            color: #fff;
+            outline: none;
+        }
+        .create-row input:focus { border-color: #4fc3f7; }
+        .create-row button {
+            padding: 10px 20px;
+            font-size: 14px;
+            background: #1e3a4a;
+            color: #4fc3f7;
+            border: 1px solid #2d4a5e;
+            border-radius: 6px;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .create-row button:hover { background: #2d4a5e; }
+
+        .new-key-box {
+            background: #0f1923;
+            border: 1px solid #4caf50;
+            border-radius: 6px;
+            padding: 16px;
+            margin-bottom: 16px;
+            display: none;
+        }
+        .new-key-box.active { display: block; }
+        .new-key-box .label { font-size: 12px; color: #4caf50; margin-bottom: 6px; }
+        .new-key-box .key-value {
+            font-family: monospace;
+            font-size: 14px;
+            color: #fff;
+            word-break: break-all;
+            padding: 8px;
+            background: #1a2733;
+            border-radius: 4px;
+            margin-bottom: 8px;
+        }
+        .new-key-box .warning { font-size: 12px; color: #ff9800; }
+        .copy-key-btn {
+            padding: 4px 12px;
+            font-size: 12px;
+            background: #1e3a4a;
+            color: #4fc3f7;
+            border: 1px solid #2d4a5e;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 4px;
+        }
+        .copy-key-btn:hover { background: #2d4a5e; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        th {
+            text-align: left;
+            padding: 10px 12px;
+            border-bottom: 1px solid #2d4a5e;
+            color: #78909c;
+            font-weight: 500;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+        td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #1e3040;
+        }
+        td.mono { font-family: monospace; color: #4fc3f7; }
+        .status-active { color: #4caf50; }
+        .status-revoked { color: #78909c; text-decoration: line-through; }
+        .revoke-btn {
+            padding: 4px 12px;
+            font-size: 12px;
+            background: #3a1a1a;
+            color: #f87171;
+            border: 1px solid #7f1d1d;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .revoke-btn:hover { background: #7f1d1d; }
+        .empty { color: #546e7a; font-style: italic; padding: 20px 0; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>Backhaul Monitor</h1>
+            <div class="subtitle">Admin — API Key Management</div>
+        </div>
+        <div class="header-right">
+            <a href="/">Monitor</a>
+            <a href="/docs">API Docs</a>
+            <a href="/admin/logout">Logout</a>
+        </div>
+    </div>
+
+    <div class="content">
+        <div class="section">
+            <h2>Create API Key</h2>
+            <div class="create-row">
+                <input type="text" id="key-label" placeholder="Label (e.g. omni-prod, n8n-test, kyle-dev)">
+                <button onclick="createKey()">Create Key</button>
+            </div>
+            <div class="new-key-box" id="new-key-box">
+                <div class="label">New API Key Created</div>
+                <div class="key-value" id="new-key-value"></div>
+                <button class="copy-key-btn" onclick="copyKey()">Copy Key</button>
+                <div class="warning">Save this key now — it won't be shown again.</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>API Keys</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Label</th>
+                        <th>Key Prefix</th>
+                        <th>Created</th>
+                        <th>Status</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="keys-table">
+                </tbody>
+            </table>
+            <div class="empty" id="no-keys" style="display:none;">No API keys yet. Create one above.</div>
+        </div>
+
+        <div class="section">
+            <h2>Usage</h2>
+            <p style="font-size:13px; color:#90a4ae; line-height:1.6;">
+                External systems (n8n, Omni, custom integrations) include the key in the <code style="color:#4fc3f7;">X-API-Key</code> header:
+            </p>
+            <pre style="background:#0f1923; padding:12px; border-radius:6px; margin-top:12px; font-size:13px; color:#e0e0e0; overflow-x:auto;">curl -H "X-API-Key: bhm_your_key_here" https://your-host/api/diagnose/BH-AV4200-18-1.SITEA.SITEB</pre>
+        </div>
+    </div>
+
+    <script>
+        async function loadKeys() {
+            const resp = await fetch('/admin/api/keys');
+            const data = await resp.json();
+            const tbody = document.getElementById('keys-table');
+            const noKeys = document.getElementById('no-keys');
+
+            if (!data.keys || data.keys.length === 0) {
+                tbody.innerHTML = '';
+                noKeys.style.display = 'block';
+                return;
+            }
+            noKeys.style.display = 'none';
+
+            tbody.innerHTML = data.keys.map(k => {
+                const date = new Date(k.created * 1000).toLocaleDateString('en-US', {
+                    month: 'short', day: 'numeric', year: 'numeric'
+                });
+                const status = k.active
+                    ? '<span class="status-active">Active</span>'
+                    : '<span class="status-revoked">Revoked</span>';
+                const action = k.active
+                    ? `<button class="revoke-btn" onclick="revokeKey(${k.id})">Revoke</button>`
+                    : '';
+                return `<tr>
+                    <td>${k.label}</td>
+                    <td class="mono">${k.prefix}...</td>
+                    <td>${date}</td>
+                    <td>${status}</td>
+                    <td>${action}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        async function createKey() {
+            const label = document.getElementById('key-label').value.trim();
+            if (!label) { alert('Enter a label'); return; }
+
+            const resp = await fetch('/admin/api/keys', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ label }),
+            });
+            const data = await resp.json();
+
+            document.getElementById('new-key-value').textContent = data.key;
+            document.getElementById('new-key-box').classList.add('active');
+            document.getElementById('key-label').value = '';
+            loadKeys();
+        }
+
+        async function revokeKey(id) {
+            if (!confirm('Revoke this API key? External systems using it will stop working.')) return;
+            await fetch(`/admin/api/keys/${id}`, { method: 'DELETE' });
+            loadKeys();
+        }
+
+        function copyKey() {
+            const key = document.getElementById('new-key-value').textContent;
+            navigator.clipboard.writeText(key);
+            const btn = event.target;
+            btn.textContent = 'Copied';
+            setTimeout(() => btn.textContent = 'Copy Key', 2000);
+        }
+
+        loadKeys();
+    </script>
+</body>
+</html>

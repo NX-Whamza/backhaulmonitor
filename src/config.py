@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     openweather_api_key: str = ""
     weather_api_url: str = "https://api.open-meteo.com"
 
+    # Admin
+    admin_username: str = "admin"
+    admin_password: str = ""
+    session_secret: str = "change-me-in-production"
+
     # App
     app_host: str = "0.0.0.0"
     app_port: int = 8501
