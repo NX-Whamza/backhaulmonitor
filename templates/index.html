@@ -22,6 +22,16 @@
         }
         .header h1 { font-size: 20px; color: #4fc3f7; }
         .header .subtitle { font-size: 13px; color: #78909c; }
+        .header-right { margin-left: auto; display: flex; gap: 12px; align-items: center; }
+        .header-right a {
+            color: #546e7a;
+            text-decoration: none;
+            font-size: 13px;
+            padding: 6px 12px;
+            border: 1px solid transparent;
+            border-radius: 4px;
+        }
+        .header-right a:hover { color: #4fc3f7; border-color: #2d4a5e; }
 
         .search-bar {
             max-width: 800px;
@@ -284,6 +294,10 @@
         <div>
             <h1>Backhaul Monitor</h1>
             <div class="subtitle">BH Link Diagnostics &mdash; PCN | Weather | RF Telemetry</div>
+        </div>
+        <div class="header-right">
+            <a href="/docs">API Docs</a>
+            <a href="/admin">Admin</a>
         </div>
     </div>
 

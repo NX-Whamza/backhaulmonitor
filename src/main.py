@@ -241,6 +241,32 @@ def _snmp_is_down(problems: list) -> bool:
     return any("snmp" in p.get("name", "").lower() for p in problems)
 
 
+def _validate_pcn(pcn: dict | None, band_ghz: int | None, link_info) -> dict | None:
+    """Discard PCN data that doesn't belong to this link.
+
+    - Unlicensed bands (5 GHz) have no FCC coordination — any PCN match is wrong.
+    - If the PCN band doesn't match the device band, it's a cross-match from
+      a different link on the same tower pair.
+    """
+    if not pcn:
+        return None
+
+    # Unlicensed bands have no PCN data
+    if band_ghz and band_ghz == 5:
+        return None
+    if link_info and getattr(link_info, 'technology', None) == 'unlicensed':
+        return None
+
+    # Cross-check: PCN band must match device band
+    if band_ghz and pcn.get("band"):
+        import re
+        m = re.match(r"(\d+)\s*GHz", pcn["band"])
+        if m and int(m.group(1)) != band_ghz:
+            return None
+
+    return pcn
+
+
 def _sanitize_rf(rf: dict, snmp_down: bool) -> dict:
     """Replace zero RF values with None when SNMP is down (no real data)."""
     if not snmp_down or not rf:
@@ -482,6 +508,9 @@ async def api_diagnose(
     # Sanitize zero RF values when SNMP is down
     snmp_down = _snmp_is_down(problems)
     rf_snapshot = _sanitize_rf(rf_snapshot, snmp_down)
+
+    # Validate PCN data — discard if it doesn't belong to this link
+    pcn = _validate_pcn(pcn, band_ghz, link_info)
 
     # Fill in band from PCN if parser didn't extract it
     if not band_ghz and pcn and pcn.get("band"):
