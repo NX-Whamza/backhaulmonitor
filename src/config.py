@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     radio_password: str = ""
 
     # Weather
+    openweather_api_key: str = ""
     weather_api_url: str = "https://api.open-meteo.com"
 
     # App

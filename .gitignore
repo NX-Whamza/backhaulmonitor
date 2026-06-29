@@ -6,3 +6,7 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+feedback.db
+feedback.db-shm
+feedback.db-wal
+*.service

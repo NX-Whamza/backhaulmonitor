@@ -455,58 +455,98 @@ class CatalogClient:
     ) -> Optional[dict]:
         """Query bh_PCN_data (CoMSearch FCC coordination) by tower pair.
 
-        This table is small (~5k rows) so we can afford broader matching:
-        query by one tower, then cross-reference the other tower in
-        results using substring matching (handles HOHQ2↔HOHQ,
-        CALLISBURG-NO-1↔CALLISBURG style mismatches).
+        This table is small (~5k rows) so we use LIKE queries for broad
+        matching — handles spelling variations (HUDSONOAKS↔HUDSONOAK),
+        missing state prefixes (HOHQ↔TX-HOHQ2), etc.
         """
+        import asyncio
+
         ta_variants = self._pcn_tower_variants(tower_a)
         tz_variants = self._pcn_tower_variants(tower_z)
-        all_variants = list(dict.fromkeys(ta_variants + tz_variants))
 
-        for tower in all_variants:
-            safe = tower.replace("'", "''")
+        # Build LIKE search keys: use the shortest meaningful core of each
+        # tower name for broad SQL matching, then cross-reference client-side.
+        like_keys: list[str] = []
+        for v in list(dict.fromkeys(ta_variants + tz_variants)):
+            safe = v.replace("'", "''").replace("%", "")
+            if len(safe) >= 3:
+                like_keys.append(safe)
+        # Deduplicate preserving order
+        like_keys = list(dict.fromkeys(like_keys))
+
+        async def _search(key: str) -> list[dict]:
+            safe = key.replace("'", "''")
             data = await self._call_tool("smap__query", {
                 "repo_path": "nextlink",
                 "source_name": "smap",
                 "sql": (
                     f"SELECT {self._PCN_COORD_COLUMNS} "
                     f"FROM bh_PCN_data WHERE "
-                    f"site1 = '{safe}' OR site2 = '{safe}' "
-                    "LIMIT 10"
+                    f"site1 LIKE '%{safe}%' OR site2 LIKE '%{safe}%' "
+                    "LIMIT 20"
                 ),
             })
             if not data or not data.get("rows"):
-                continue
+                return []
             columns = data.get("columns", [])
-            rows = [
+            return [
                 dict(zip(columns, r)) if isinstance(r, list) else r
                 for r in data["rows"]
             ]
-            # Cross-reference: the OTHER site should relate to the
-            # opposite tower.  Checks (in order of strength):
-            #   1. Exact match
-            #   2. Substring either way  (HOHQ ↔ HOHQ2)
-            #   3. Long common prefix    (TX-WEATHERFORD-REVER ↔ TX-WEATHERFORD-FX-REVERE)
-            other_variants = tz_variants if tower in ta_variants else ta_variants
-            for rd in rows:
-                s1 = (rd.get("site1") or "").upper()
-                s2 = (rd.get("site2") or "").upper()
-                other_site = s2 if tower.upper() == s1 else s1
-                for ov in other_variants:
-                    ov_u = ov.upper()
-                    if ov_u == other_site or ov_u in other_site or other_site in ov_u:
-                        return rd
-                    # Common-prefix match: ≥12 shared leading chars is strong
-                    pfx = min(len(ov_u), len(other_site))
-                    common = 0
-                    for a, b in zip(ov_u, other_site):
-                        if a != b:
-                            break
-                        common += 1
-                    if common >= 12 or (pfx > 0 and common >= pfx * 0.75):
-                        return rd
+
+        # Run all LIKE queries in parallel
+        search_results = await asyncio.gather(
+            *[_search(k) for k in like_keys],
+            return_exceptions=True,
+        )
+
+        # Collect all unique rows
+        all_rows: list[dict] = []
+        seen_pairs: set[tuple] = set()
+        for batch in search_results:
+            if isinstance(batch, Exception) or not batch:
+                continue
+            for rd in batch:
+                pair = ((rd.get("site1") or ""), (rd.get("site2") or ""))
+                if pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    all_rows.append(rd)
+
+        if not all_rows:
+            return None
+
+        # Cross-reference: find rows where BOTH towers match
+        # Checks (in order of strength):
+        #   1. Exact match
+        #   2. Substring either way  (HOHQ ↔ TX-HOHQ2)
+        #   3. Long common prefix    (TX-WEATHERFORD-REVER ↔ TX-WEATHERFORD-FX-REVERE)
+        for rd in all_rows:
+            s1 = (rd.get("site1") or "").upper()
+            s2 = (rd.get("site2") or "").upper()
+            a_match = self._tower_matches(s1, ta_variants) or self._tower_matches(s2, ta_variants)
+            b_match = self._tower_matches(s1, tz_variants) or self._tower_matches(s2, tz_variants)
+            if a_match and b_match:
+                return rd
         return None
+
+    @staticmethod
+    def _tower_matches(site: str, variants: list[str]) -> bool:
+        """Check if a SMAP site name matches any tower variant."""
+        site_u = site.upper()
+        for v in variants:
+            vu = v.upper()
+            if vu == site_u or vu in site_u or site_u in vu:
+                return True
+            # Common-prefix match
+            pfx = min(len(vu), len(site_u))
+            common = 0
+            for a, b in zip(vu, site_u):
+                if a != b:
+                    break
+                common += 1
+            if common >= 12 or (pfx > 0 and common >= pfx * 0.75):
+                return True
+        return False
 
     async def get_tower_coords(self, tower: str) -> Optional[dict]:
         """Get tower lat/lon from SMAP tower data."""

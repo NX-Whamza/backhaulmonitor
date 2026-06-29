@@ -9,10 +9,12 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Path, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
+from pydantic import BaseModel, Field
 
 from src.config import settings
 from src.zabbix.client import ZabbixClient
@@ -21,11 +23,45 @@ from src.pcn.calculator import CatalogClient, build_link_assessment
 from src.radio.client import RadioClient
 from src.diagnosis.engine import diagnose_link
 from src.topology.hostname_parser import parse_bh_hostname, tower_tag_variants
+from src.feedback.store import init_db, save_feedback, check_recent_feedback, get_verdict_accuracy, blend_confidence
+from src.schemas import (
+    DiagnoseResponse,
+    FeedbackResponse,
+    HealthResponse,
+    RfSnapshotResponse,
+    SearchResponse,
+    TowerResponse,
+)
+
+
+OPENAPI_TAGS = [
+    {
+        "name": "Diagnostics",
+        "description": "Full link diagnosis — RF telemetry, PCN design comparison, weather, far-end check, and verdict.",
+    },
+    {
+        "name": "Discovery",
+        "description": "Find BH devices by hostname, tower name, or IP. List all devices at a tower.",
+    },
+    {
+        "name": "Telemetry",
+        "description": "Raw RF snapshots from Zabbix SNMP — normalized across Aviat, Cambium, and Siklu.",
+    },
+    {
+        "name": "Feedback",
+        "description": "Tech feedback on diagnosis accuracy. Feeds the Bayesian confidence blender.",
+    },
+    {
+        "name": "System",
+        "description": "Health checks.",
+    },
+]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    init_db()
     app.state.zabbix = ZabbixClient()
     app.state.weather = WeatherClient()
     app.state.catalog = CatalogClient()
@@ -40,9 +76,40 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Backhaul Monitor",
-    description="BH link diagnostic tool for NOC technicians",
-    version="0.1.0",
+    summary="BH link diagnostics for NOC technicians",
+    description="""
+## What this does
+
+Pulls from **4 data sources in parallel** and returns a diagnosis in ~3 seconds:
+
+| Source | What it provides |
+|--------|-----------------|
+| **Zabbix** | Live RF (RSL, SNR, mod, TX power, BER, capacity), 7-day trend baseline, active alerts |
+| **SMAP / CoMSearch** | FCC PCN design values — coordinated power, expected RSL, antenna specs, path distance |
+| **Weather** | Rain rate, 6-hour history, humidity, wind — plus ITU-R P.838 rain fade estimation |
+| **Hostname Parser** | Radio model, band, tower sites, far-end device, companion polarization |
+
+## Verdict types
+
+| Verdict | Trigger |
+|---------|---------|
+| `rain_fade` | Active/recent rain with estimated attenuation for this band and path distance |
+| `off_target` | RSL more than 3 dB off PCN design (same formula as Grafana BH dashboard) |
+| `hardware_issue` | Baseline drop with no rain, asymmetric near/far RSL, SNMP down |
+| `alignment_issue` | Running above PCN design, azimuth anomalies |
+| `interference` | Degradation inconsistent with weather or hardware |
+| `normal` | On-target, mod at max, baseline stable |
+
+Confidence is Bayesian-blended with historical tech feedback — the more feedback, the better the scoring gets.
+
+## Supported radios
+
+Aviat WTM4200/4100/4800, Cambium CN820S/C/850C, Siklu 2500/1200/8010,
+Ubiquiti AirFiber/Wave/PowerBeam, Cambium Force/PTP/ePMP.
+""",
+    version="1.0.0",
     lifespan=lifespan,
+    openapi_tags=OPENAPI_TAGS,
 )
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -60,7 +127,13 @@ async def index(request: Request):
     })
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    response_model=HealthResponse,
+    tags=["System"],
+    summary="Health check",
+    description="Returns service status. Use for load balancer health probes or uptime monitoring.",
+)
 async def health():
     return {"status": "ok"}
 
@@ -123,13 +196,30 @@ def _merge_companion_rf(
     return merged
 
 
-@app.get("/api/diagnose/{hostname}")
-async def api_diagnose(request: Request, hostname: str):
-    """Full diagnostic for a BH hostname.
+@app.get(
+    "/api/diagnose/{hostname}",
+    response_model=DiagnoseResponse,
+    tags=["Diagnostics"],
+    summary="Full link diagnosis",
+    description="""Run a complete diagnostic on a backhaul link.
 
-    Runs all checks in parallel: RF snapshot, PCN lookup, weather,
-    baseline trend, far-end RF — then produces a verdict.
-    """
+1. Parse hostname → radio model, band, tower sites, vendor family
+2. Phase 1 (parallel): Zabbix RF + baseline + problems, PCN design values, tower coords, far-end discovery, companion device
+3. Phase 2: Far-end RF and weather (needs Phase 1 results)
+4. Compute off-target dB, fade margin, modulation headroom, rain attenuation
+5. Score verdict categories, pick highest, classify severity, generate recommendations
+6. Blend confidence with historical tech feedback
+
+Hostname format: `BH-{MODEL}-{BAND}-{NUM}.{TOWER_A}.{TOWER_Z}`
+""",
+)
+async def api_diagnose(
+    request: Request,
+    hostname: str = Path(
+        ...,
+        description="BH device hostname",
+    ),
+):
     zabbix: ZabbixClient = request.app.state.zabbix
     weather_client: WeatherClient = request.app.state.weather
     catalog: CatalogClient = request.app.state.catalog
@@ -334,6 +424,13 @@ async def api_diagnose(request: Request, hostname: str):
         active_problems=problems if problems else None,
     )
 
+    # Blend confidence with historical feedback accuracy
+    raw_confidence = verdict["confidence"]
+    verdict["confidence"] = blend_confidence(raw_confidence, verdict["verdict"])
+    accuracy_stats = get_verdict_accuracy(verdict["verdict"])
+    verdict["raw_confidence"] = raw_confidence
+    verdict["accuracy"] = accuracy_stats
+
     return {
         "hostname": hostname,
         "ip": host_ip,
@@ -370,9 +467,27 @@ def _is_ip(q: str) -> bool:
     return len(parts) >= 2 and all(p.isdigit() for p in parts if p)
 
 
-@app.get("/api/search")
-async def api_search(request: Request, q: str = ""):
-    """Search for BH devices by hostname, tower name, or IP address."""
+@app.get(
+    "/api/search",
+    response_model=SearchResponse,
+    tags=["Discovery"],
+    summary="Search BH devices",
+    description="""Search by hostname, tower name, or IP address.
+
+- **Hostname:** auto-prepends `BH-` if missing
+- **Tower:** searches Zabbix tower tags (case-insensitive)
+- **IP:** detects IP format and searches Zabbix interfaces
+
+Results are deduped by Zabbix host ID.
+""",
+)
+async def api_search(
+    request: Request,
+    q: str = Query(
+        "",
+        description="Hostname, tower name, or IP address (min 2 characters)",
+    ),
+):
     if not q or len(q) < 2:
         return {"results": []}
     zabbix: ZabbixClient = request.app.state.zabbix
@@ -383,12 +498,13 @@ async def api_search(request: Request, q: str = ""):
         # IP search
         all_hosts = await zabbix.search_by_ip(q)
     else:
-        # Hostname search
+        # Search hostname (with BH- prefix) and tower tag in parallel
         hostname_q = f"BH-{q}" if not q.upper().startswith("BH-") else q
-        all_hosts = await zabbix.search_hosts(hostname_q)
-        # Also search by tower name
-        tower_hosts = await zabbix.search_by_tower(q.upper())
-        all_hosts = all_hosts + tower_hosts
+        host_results, tower_results = await asyncio.gather(
+            zabbix.search_hosts(hostname_q),
+            zabbix.search_by_tower(q.upper()),
+        )
+        all_hosts = host_results + tower_results
 
     # Merge results, dedup by hostid
     seen = set()
@@ -411,9 +527,24 @@ async def api_search(request: Request, q: str = ""):
     return {"results": results}
 
 
-@app.get("/api/tower/{tower}")
-async def api_tower(request: Request, tower: str):
-    """List all BH devices at a tower with basic health info."""
+@app.get(
+    "/api/tower/{tower}",
+    response_model=TowerResponse,
+    tags=["Discovery"],
+    summary="List devices at a tower",
+    description="""List all BH devices at a tower site.
+
+Searches Zabbix by tower tag (exact match, case-insensitive). Returns hostname,
+link type, max capacity, and technology for each device.
+""",
+)
+async def api_tower(
+    request: Request,
+    tower: str = Path(
+        ...,
+        description="Tower site name",
+    ),
+):
     zabbix: ZabbixClient = request.app.state.zabbix
     hosts = await zabbix.search_by_tower(tower.upper())
     devices = []
@@ -430,9 +561,80 @@ async def api_tower(request: Request, tower: str):
     return {"tower": tower.upper(), "devices": devices}
 
 
-@app.get("/api/rf/{hostname}")
-async def api_rf_snapshot(request: Request, hostname: str):
-    """Get raw RF snapshot for a hostname."""
+class FeedbackIn(BaseModel):
+    """Feedback on a diagnosis verdict."""
+    hostname: str = Field(..., description="BH device hostname that was diagnosed")
+    verdict: str = Field(..., description="Verdict type (rain_fade, off_target, hardware_issue, etc.)", examples=["rain_fade"])
+    confidence: float = Field(..., description="Confidence score shown (0-100)", examples=[72.0])
+    severity: str = Field(..., description="Severity level shown", examples=["minor"])
+    accurate: bool = Field(..., description="true = diagnosis was right, false = it missed", examples=[True])
+    band_ghz: int | None = Field(None, description="Frequency band (GHz)", examples=[18])
+    off_target_db: float | None = Field(None, description="Off-target dB at time of diagnosis", examples=[2.5])
+    baseline_delta: float | None = Field(None, description="Baseline delta dB at time of diagnosis", examples=[1.3])
+    rain_rate: float | None = Field(None, description="Rain rate (mm/hr) at time of diagnosis", examples=[4.2])
+    comment: str | None = Field(None, description="Free-text comment")
+
+
+@app.post(
+    "/api/feedback",
+    response_model=FeedbackResponse,
+    tags=["Feedback"],
+    summary="Submit diagnosis feedback",
+    description="""Record whether a diagnosis was accurate or not.
+
+Updates historical accuracy stats for that verdict type. The confidence blender
+uses this to adjust future scores — accurate verdicts get boosted, wrong ones get pulled down.
+
+`accurate: true` = diagnosis was right, `false` = it missed.
+""",
+)
+async def api_feedback(body: FeedbackIn):
+    """Record user feedback on a diagnosis verdict."""
+    # Check if this link + verdict was already reported recently
+    existing = check_recent_feedback(body.hostname, body.verdict)
+    if existing:
+        return {
+            "saved": False,
+            "already_reported": True,
+            "existing_id": existing["id"],
+            "message": "Feedback already submitted for this link and verdict",
+            "accuracy": get_verdict_accuracy(body.verdict),
+        }
+
+    row_id = save_feedback(
+        hostname=body.hostname,
+        verdict=body.verdict,
+        confidence=body.confidence,
+        severity=body.severity,
+        accurate=body.accurate,
+        band_ghz=body.band_ghz,
+        off_target_db=body.off_target_db,
+        baseline_delta=body.baseline_delta,
+        rain_rate=body.rain_rate,
+        comment=body.comment,
+    )
+    stats = get_verdict_accuracy(body.verdict)
+    return {"saved": True, "id": row_id, "accuracy": stats}
+
+
+@app.get(
+    "/api/rf/{hostname}",
+    response_model=RfSnapshotResponse,
+    tags=["Telemetry"],
+    summary="Raw RF snapshot",
+    description="""Current RF telemetry for a BH device, pulled from Zabbix SNMP.
+
+Normalized across vendors — Aviat (`av.wireless.*`), Cambium CN820 (`820.wireless.*`),
+Siklu (`system.rf*`). Multi-carrier configs (2+0, XPIC) include per-carrier data in `all_radios`.
+""",
+)
+async def api_rf_snapshot(
+    request: Request,
+    hostname: str = Path(
+        ...,
+        description="BH device hostname",
+    ),
+):
     zabbix: ZabbixClient = request.app.state.zabbix
     link_info = parse_bh_hostname(hostname)
     rf_prefix = link_info.rf_key_prefix if link_info else "av.wireless"

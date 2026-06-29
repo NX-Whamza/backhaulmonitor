@@ -63,7 +63,7 @@
             font-family: monospace;
             font-size: 14px;
         }
-        .search-result-item:hover { background: #243442; }
+        .search-result-item:hover, .search-result-item.active { background: #243442; }
 
         .content { max-width: 1200px; margin: 24px auto; padding: 0 24px; }
 
@@ -129,6 +129,25 @@
             align-items: center;
             gap: 6px;
         }
+        .card-copy-btn {
+            margin-left: auto;
+            background: none;
+            border: 1px solid transparent;
+            color: #546e7a;
+            font-size: 12px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.2s, color 0.2s, border-color 0.2s;
+            text-transform: none;
+            letter-spacing: 0;
+            font-weight: 400;
+            flex-shrink: 0;
+        }
+        .card:hover .card-copy-btn { opacity: 1; }
+        .card-copy-btn:hover { color: #4fc3f7; border-color: #2d4a5e; }
+        .card-copy-btn.copied { color: #4caf50; border-color: #4caf50; opacity: 1; }
         .info-tip {
             display: inline-flex;
             align-items: center;
@@ -180,6 +199,41 @@
         .metric-value.warn { color: #ff9800; }
         .metric-value.bad { color: #f44336; }
 
+        /* Feedback buttons */
+        .feedback-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 8px;
+        }
+        .feedback-row .fb-label {
+            font-size: 13px;
+            color: #90a4ae;
+        }
+        .feedback-row .fb-btn {
+            background: #2d4a5e;
+            color: #e0e0e0;
+            border: 1px solid #3a6070;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            transition: background 0.2s, border-color 0.2s;
+        }
+        .feedback-row .fb-btn:hover { background: #3a6070; border-color: #4fc3f7; }
+        .feedback-row .fb-btn.selected-yes { background: #1b5e20; border-color: #4caf50; color: #fff; }
+        .feedback-row .fb-btn.selected-no { background: #7f1d1d; border-color: #f44336; color: #fff; }
+        .feedback-row .fb-btn:disabled { opacity: 0.6; cursor: default; }
+        .accuracy-badge {
+            font-size: 12px;
+            color: #78909c;
+            margin-left: 8px;
+        }
+        .accuracy-badge span { color: #b0bec5; font-weight: 600; }
+
         .findings-list { list-style: none; padding: 0; }
         .findings-list li {
             padding: 8px 12px;
@@ -197,6 +251,32 @@
             border-radius: 0 4px 4px 0;
             font-size: 14px;
         }
+        .problems-card { border-color: #5a3a00; }
+        .problems-card h3 { color: #ff9800; }
+        .problems-list { list-style: none; padding: 0; }
+        .problems-list li {
+            padding: 8px 12px;
+            margin-bottom: 6px;
+            background: #2a1f0a;
+            border-left: 3px solid #ff9800;
+            border-radius: 0 4px 4px 0;
+            font-size: 14px;
+        }
+        .copy-all-footer {
+            text-align: center;
+            padding: 16px 0 32px;
+        }
+        .copy-all-btn {
+            background: #1a2733;
+            color: #78909c;
+            border: 1px solid #2d4a5e;
+            padding: 8px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: color 0.2s, border-color 0.2s;
+        }
+        .copy-all-btn:hover { color: #4fc3f7; border-color: #4fc3f7; }
     </style>
 </head>
 <body>
@@ -211,7 +291,7 @@
         <input
             type="text"
             id="search-input"
-            placeholder="Search by hostname, tower name, or IP (e.g. HILLTOP, BH-AV4200-18-1, 10.247.190.75)"
+            placeholder="Search by hostname, tower name, or IP"
             autocomplete="off"
         />
         <div class="search-results" id="search-results"></div>
@@ -229,30 +309,41 @@
                 <div style="flex:1">
                     <div class="verdict-title" id="verdict-title"></div>
                     <div class="verdict-confidence" id="verdict-confidence"></div>
+                    <div class="feedback-row" id="feedback-row">
+                        <span class="fb-label">Accurate?</span>
+                        <button class="fb-btn" id="fb-yes" onclick="submitFeedback(true)">Yes</button>
+                        <button class="fb-btn" id="fb-no" onclick="submitFeedback(false)">No</button>
+                        <span class="accuracy-badge" id="accuracy-badge"></span>
+                    </div>
                 </div>
-                <button id="copy-btn" onclick="copySummary()" style="background:#2d4a5e;color:#e0e0e0;border:none;padding:10px 18px;border-radius:6px;cursor:pointer;font-size:14px;white-space:nowrap">Copy Summary</button>
+            </div>
+
+            <!-- Active problems (shown only when present) -->
+            <div class="card problems-card" id="problems-card" style="display:none;margin-bottom:16px">
+                <h3>Active Zabbix Problems <button class="card-copy-btn" onclick="copyCard('problems')">Copy</button></h3>
+                <ul class="problems-list" id="problems-list"></ul>
             </div>
 
             <!-- Link info + RF cards -->
             <div class="card-grid">
                 <div class="card" id="link-card">
-                    <h3>Link Information <i class="info-tip">i<span class="tip-text">Hostname parser + Zabbix host tags</span></i></h3>
+                    <h3>Link Information <i class="info-tip">i<span class="tip-text">Hostname parser + Zabbix host tags</span></i> <button class="card-copy-btn" onclick="copyCard('link')">Copy</button></h3>
                     <div id="link-info"></div>
                 </div>
                 <div class="card" id="rf-card">
-                    <h3>RF Telemetry (Near End) <i class="info-tip">i<span class="tip-text">Live SNMP via Zabbix</span></i></h3>
+                    <h3>RF Telemetry (Near End) <i class="info-tip">i<span class="tip-text">Live SNMP via Zabbix</span></i> <button class="card-copy-btn" onclick="copyCard('rf')">Copy</button></h3>
                     <div id="rf-info"></div>
                 </div>
                 <div class="card" id="pcn-card">
-                    <h3>Link Design (FCC / Baseline) <i class="info-tip">i<span class="tip-text" id="pcn-source-tip">PCN from codexCatalog SMAP &bull; Baseline from Zabbix 7-day trend</span></i></h3>
+                    <h3>Link Design (FCC / Baseline) <i class="info-tip">i<span class="tip-text" id="pcn-source-tip">PCN from codexCatalog SMAP &bull; Baseline from Zabbix 7-day trend</span></i> <button class="card-copy-btn" onclick="copyCard('pcn')">Copy</button></h3>
                     <div id="pcn-info"></div>
                 </div>
                 <div class="card" id="far-end-card">
-                    <h3>Far End RF <i class="info-tip">i<span class="tip-text">Live SNMP via Zabbix (far-end device)</span></i></h3>
+                    <h3>Far End RF <i class="info-tip">i<span class="tip-text">Live SNMP via Zabbix (far-end device)</span></i> <button class="card-copy-btn" onclick="copyCard('far-end')">Copy</button></h3>
                     <div id="far-end-info"></div>
                 </div>
                 <div class="card" id="weather-card">
-                    <h3>Weather Conditions <i class="info-tip">i<span class="tip-text">Open-Meteo API &bull; Current + 6h rain history</span></i></h3>
+                    <h3>Weather Conditions <i class="info-tip">i<span class="tip-text">OpenWeatherMap (primary) &bull; Open-Meteo (fallback) &bull; Current + 6h rain history</span></i> <button class="card-copy-btn" onclick="copyCard('weather')">Copy</button></h3>
                     <div id="weather-info"></div>
                 </div>
             </div>
@@ -260,13 +351,18 @@
             <!-- Findings + Recommendations -->
             <div class="card-grid">
                 <div class="card">
-                    <h3>Findings</h3>
+                    <h3>Findings <button class="card-copy-btn" onclick="copyCard('findings')">Copy</button></h3>
                     <ul class="findings-list" id="findings-list"></ul>
                 </div>
                 <div class="card">
-                    <h3>Recommendations</h3>
+                    <h3>Recommendations <button class="card-copy-btn" onclick="copyCard('recs')">Copy</button></h3>
                     <ul class="findings-list recs-list" id="recs-list"></ul>
                 </div>
+            </div>
+
+            <!-- Copy All footer -->
+            <div class="copy-all-footer">
+                <button class="copy-all-btn" id="copy-all-btn" onclick="copySummary()">Copy Full Summary</button>
             </div>
         </div>
     </div>
@@ -311,23 +407,53 @@
         const loading = document.getElementById('loading');
         const results = document.getElementById('results');
         let searchTimeout;
+        let activeIdx = -1;
+        let currentResults = [];
 
         searchInput.addEventListener('input', (e) => {
             clearTimeout(searchTimeout);
+            activeIdx = -1;
             const q = e.target.value.trim();
-            if (q.length < 3) {
+            if (q.length < 2) {
                 searchResults.classList.remove('active');
+                currentResults = [];
                 return;
             }
-            searchTimeout = setTimeout(() => doSearch(q), 300);
+            searchTimeout = setTimeout(() => doSearch(q), 200);
         });
 
         searchInput.addEventListener('keydown', async (e) => {
+            const items = searchResults.querySelectorAll('.search-result-item');
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                if (items.length === 0) return;
+                activeIdx = Math.min(activeIdx + 1, items.length - 1);
+                highlightItem(items);
+                return;
+            }
+            if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (items.length === 0) return;
+                activeIdx = Math.max(activeIdx - 1, 0);
+                highlightItem(items);
+                return;
+            }
+            if (e.key === 'Escape') {
+                searchResults.classList.remove('active');
+                activeIdx = -1;
+                return;
+            }
             if (e.key === 'Enter') {
+                e.preventDefault();
+                // If an item is highlighted, select it
+                if (activeIdx >= 0 && activeIdx < currentResults.length) {
+                    selectHost(currentResults[activeIdx].hostname);
+                    return;
+                }
                 searchResults.classList.remove('active');
                 const q = searchInput.value.trim();
                 if (!q) return;
-                // If it looks like an IP, resolve to hostname first
                 if (/^\d+\.\d+/.test(q)) {
                     try {
                         const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
@@ -347,14 +473,23 @@
             }
         });
 
+        function highlightItem(items) {
+            items.forEach((el, i) => {
+                el.classList.toggle('active', i === activeIdx);
+                if (i === activeIdx) el.scrollIntoView({ block: 'nearest' });
+            });
+        }
+
         async function doSearch(q) {
             try {
                 const resp = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
                 const data = await resp.json();
-                if (data.results.length > 0) {
-                    searchResults.innerHTML = data.results.map(r => {
+                currentResults = data.results || [];
+                activeIdx = -1;
+                if (currentResults.length > 0) {
+                    searchResults.innerHTML = currentResults.map((r, i) => {
                         const meta = [r.ip, r.tower, r.link_type].filter(Boolean).join(' · ');
-                        return `<div class="search-result-item" onclick="selectHost('${r.hostname}')">
+                        return `<div class="search-result-item" onmouseenter="activeIdx=${i};highlightItem(searchResults.querySelectorAll('.search-result-item'))" onclick="selectHost('${r.hostname}')">
                             <span>${r.hostname}</span>
                             ${meta ? `<span style="color:#546e7a;font-size:12px;float:right">${meta}</span>` : ''}
                         </div>`;
@@ -371,8 +506,16 @@
         function selectHost(hostname) {
             searchInput.value = hostname;
             searchResults.classList.remove('active');
+            activeIdx = -1;
             runDiagnosis(hostname);
         }
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.search-bar')) {
+                searchResults.classList.remove('active');
+                activeIdx = -1;
+            }
+        });
 
         async function runDiagnosis(hostname) {
             loading.classList.add('active');
@@ -400,6 +543,21 @@
             document.getElementById('verdict-title').textContent = formatVerdict(v.verdict);
             document.getElementById('verdict-confidence').textContent =
                 `Confidence: ${v.confidence}% | Severity: ${v.severity}`;
+
+            // Reset feedback buttons
+            const fbYes = document.getElementById('fb-yes');
+            const fbNo = document.getElementById('fb-no');
+            fbYes.disabled = false; fbNo.disabled = false;
+            fbYes.className = 'fb-btn'; fbNo.className = 'fb-btn';
+            fbYes.textContent = 'Yes'; fbNo.textContent = 'No';
+
+            // Show historical accuracy badge
+            const badge = document.getElementById('accuracy-badge');
+            if (v.accuracy && v.accuracy.total > 0) {
+                badge.innerHTML = `Historically <span>${v.accuracy.accuracy_pct}%</span> accurate (${v.accuracy.total} report${v.accuracy.total !== 1 ? 's' : ''})`;
+            } else {
+                badge.innerHTML = 'No reports yet';
+            }
 
             // Link info
             const li = data.link_info;
@@ -571,8 +729,9 @@
             // Weather
             const wx = data.weather || {};
             if (Object.keys(wx).length > 0) {
+                const wxSrc = wx.weather_source === 'openweathermap' ? 'OWM' : wx.weather_source === 'open-meteo' ? 'Open-Meteo' : '?';
                 let wxRows = [
-                    ['Conditions', wx.description],
+                    ['Status', wx.description + '  (' + wxSrc + ')'],
                     ['Rain Rate (now)', wx.rain_rate_mm_hr != null ? wx.rain_rate_mm_hr + ' mm/hr' : 'N/A',
                         wx.rain_rate_mm_hr > 7.5 ? 'bad' : wx.rain_rate_mm_hr > 2.5 ? 'warn' : 'good'],
                     ['Rain Fade', wx.rain_fade_likely ? 'YES — fade expected' : wx.rain_fade_recovering ? 'Recovering — recent rain' : 'No',
@@ -605,9 +764,9 @@
                 document.getElementById('weather-info').innerHTML = '<div style="color:#546e7a;padding:16px">No weather data available</div>';
             }
 
-            // Active problems (detail list, deduplicated by name)
+            // Active problems — separate card
             const probs = data.active_problems || [];
-            let probHtml = '';
+            const probCard = document.getElementById('problems-card');
             if (probs.length > 0) {
                 const seen = {};
                 probs.forEach(p => {
@@ -616,17 +775,20 @@
                     else
                         seen[p.name].count++;
                 });
-                probHtml = '<div style="margin-bottom:8px">' + Object.values(seen).map(p => {
+                document.getElementById('problems-list').innerHTML = Object.values(seen).map(p => {
                     const sev = ['info','info','warning','average','high','critical'][parseInt(p.severity)] || 'info';
                     const sevCls = parseInt(p.severity) >= 4 ? 'bad' : parseInt(p.severity) >= 2 ? 'warn' : '';
-                    const countLabel = p.count > 1 ? ` (×${p.count})` : '';
+                    const countLabel = p.count > 1 ? ` (\u00d7${p.count})` : '';
                     return `<li><span class="metric-value ${sevCls}">[${sev}]</span> ${p.name}${countLabel}</li>`;
-                }).join('') + '</div>';
+                }).join('');
+                probCard.style.display = 'block';
+            } else {
+                probCard.style.display = 'none';
             }
 
-            // Findings (problems count already included by engine)
+            // Findings
             document.getElementById('findings-list').innerHTML =
-                probHtml + v.findings.map(f => `<li>${f}</li>`).join('');
+                v.findings.map(f => `<li>${f}</li>`).join('');
 
             // Recommendations
             document.getElementById('recs-list').innerHTML =
@@ -635,12 +797,9 @@
 
         let lastDiagData = null;
 
-        function copySummary() {
-            if (!lastDiagData) return;
-            const text = buildSummaryText(lastDiagData);
-            // Fallback for non-HTTPS (clipboard API requires secure context)
+        function clipCopy(text, btn) {
             if (navigator.clipboard && window.isSecureContext) {
-                navigator.clipboard.writeText(text).then(() => showCopied());
+                navigator.clipboard.writeText(text).then(() => flashCopied(btn));
             } else {
                 const ta = document.createElement('textarea');
                 ta.value = text;
@@ -650,15 +809,127 @@
                 ta.select();
                 document.execCommand('copy');
                 document.body.removeChild(ta);
-                showCopied();
+                flashCopied(btn);
             }
         }
 
-        function showCopied() {
-            const btn = document.getElementById('copy-btn');
+        function flashCopied(btn) {
+            if (!btn) return;
+            const orig = btn.textContent;
             btn.textContent = 'Copied!';
-            btn.style.background = '#1b5e20';
-            setTimeout(() => { btn.textContent = 'Copy Summary'; btn.style.background = '#2d4a5e'; }, 2000);
+            btn.classList.add('copied');
+            setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 1500);
+        }
+
+        function copySummary() {
+            if (!lastDiagData) return;
+            clipCopy(buildSummaryText(lastDiagData), document.getElementById('copy-all-btn'));
+        }
+
+        function copyCard(section) {
+            if (!lastDiagData) return;
+            const text = buildCardText(section, lastDiagData);
+            if (!text) return;
+            const btn = event.currentTarget;
+            clipCopy(text, btn);
+        }
+
+        function buildCardText(section, data) {
+            const v = data.verdict;
+            const li = data.link_info;
+            const rf = data.rf_snapshot || {};
+            const a = data.assessment || {};
+            const bl = data.baseline || {};
+            const wx = data.weather || {};
+            const pcn = data.pcn || {};
+            const fe = data.far_end_rf || {};
+            const probs = data.active_problems || [];
+            const fmtD = (v) => v != null ? (typeof v === 'number' ? v.toFixed(1) : v) : '?';
+            const fmtDelta = (v) => v != null ? (v > 0 ? '+' : '') + v.toFixed(1) : '?';
+
+            switch (section) {
+                case 'link': {
+                    let l = [`${data.hostname} (${data.ip || '?'})`];
+                    l.push(`Model: ${li.model || '?'} | Family: ${li.radio_family || '?'} | Band: ${li.band_ghz ? li.band_ghz + ' GHz' : '?'}`);
+                    l.push(`${li.tower_a || '?'} \u2192 ${li.tower_z || '?'}`);
+                    if (li.far_end) l.push(`Far End: ${li.far_end} (${li.far_end_ip || '?'})`);
+                    if (li.companion) l.push(`Companion: ${li.companion} (${li.companion_ip || '?'})`);
+                    return l.join('\n');
+                }
+                case 'rf': {
+                    if (rf.snmp_down) return `Near End RF: SNMP DOWN \u2014 no live data`;
+                    let l = ['Near End RF:'];
+                    l.push(`RSL: ${fmtD(rf.rsl)} dB | SNR: ${fmtD(rf.snr)} dB | Mod: ${rf.rxmod_name || rf.rxmod || '?'} | TX: ${fmtD(rf.txpower)} dBm | BER: ${rf.ber ?? '?'}`);
+                    if (rf.rxcap != null) l.push(`RX Cap: ${rf.rxcap.toFixed(1)} Mbps | TX Cap: ${rf.txcap != null ? rf.txcap.toFixed(1) : '?'} Mbps`);
+                    if (rf.all_radios && rf.all_radios.length > 1) {
+                        rf.all_radios.forEach(r => {
+                            const inactive = r.rsl === 0 && r.snr === 0 && r.txpower === 0;
+                            if (!inactive) l.push(`  R${r.radio_id}: RSL ${fmtD(r.rsl)} | ${r.rxmod_name || '?'} | BER ${r.ber ?? '?'}`);
+                        });
+                    }
+                    return l.join('\n');
+                }
+                case 'pcn': {
+                    let l = ['Link Design / Baseline:'];
+                    l.push(`Current RSL: ${fmtD(a.current_rsl)} dB | 7d Avg: ${fmtD(bl.baseline)} dB (\u0394 ${fmtDelta(a.baseline_delta_db)} dB)`);
+                    if (a.off_target_db != null) {
+                        const label = Math.abs(a.off_target_db) <= 3 ? 'On-target' : 'Off-target';
+                        l.push(`${label} (PCN): ${fmtDelta(a.off_target_db)} dB | Fade Margin: ${fmtD(a.fade_margin_db)} dB`);
+                    }
+                    if (Object.keys(pcn).length > 0) {
+                        let pcnLine = `PCN: Coord TX ${fmtD(pcn['coordPower1(dBm)'])} dBm`;
+                        if (a.adjusted_expected_rsl != null) pcnLine += ` | Expected RSL (at actual pwr): ${fmtD(a.adjusted_expected_rsl)} dBm`;
+                        pcnLine += ` | Azimuth: ${pcn['azimuth12(deg)'] || '?'}\u00b0 | Distance: ${pcn['distance(mi)'] || '?'} mi`;
+                        l.push(pcnLine);
+                    }
+                    return l.join('\n');
+                }
+                case 'far-end': {
+                    if (!Object.keys(fe).length) return 'Far End: No data available';
+                    let l = ['Far End RF:'];
+                    l.push(`RSL: ${fmtD(fe.rsl)} dB | SNR: ${fmtD(fe.snr)} dB | Mod: ${fe.rxmod_name || fe.rxmod || '?'} | TX: ${fmtD(fe.txpower)} dBm | BER: ${fe.ber ?? '?'}`);
+                    if (fe.all_radios && fe.all_radios.length > 1) {
+                        fe.all_radios.forEach(r => {
+                            const inactive = r.rsl === 0 && r.snr === 0 && r.txpower === 0;
+                            if (!inactive) l.push(`  R${r.radio_id}: RSL ${fmtD(r.rsl)} | ${r.rxmod_name || '?'} | BER ${r.ber ?? '?'}`);
+                        });
+                    }
+                    return l.join('\n');
+                }
+                case 'weather': {
+                    if (!Object.keys(wx).length) return 'Weather: No data available';
+                    let l = [`Weather: ${wx.description || '?'}`];
+                    l.push(`Rain: ${wx.rain_rate_mm_hr ?? 0} mm/hr (${wx.rain_classification || 'none'}) | Fade: ${wx.rain_fade_likely ? 'YES' : wx.rain_fade_recovering ? 'Recovering' : 'No'}`);
+                    l.push(`Humidity: ${wx.humidity_pct ?? '?'}% | Wind: ${wx.wind_speed_mph ?? '?'} mph | Temp: ${wx.temperature_f ?? '?'}\u00b0F`);
+                    const rc = wx.recent_rain;
+                    if (rc && rc.had_rain) {
+                        l.push(`Last 6h: ${rc.total_rain_mm} mm total, peak ${rc.max_rain_mm} mm at ${(rc.max_rain_time||'').split('T')[1]}`);
+                    }
+                    return l.join('\n');
+                }
+                case 'findings': {
+                    if (!v.findings.length) return 'No findings';
+                    return 'Findings:\n' + v.findings.map(f => `\u2022 ${f}`).join('\n');
+                }
+                case 'recs': {
+                    if (!v.recommendations.length) return 'No recommendations';
+                    return 'Recommendations:\n' + v.recommendations.map(r => `\u2192 ${r}`).join('\n');
+                }
+                case 'problems': {
+                    if (!probs.length) return 'No active problems';
+                    const seen = {};
+                    probs.forEach(p => {
+                        if (!seen[p.name]) seen[p.name] = { ...p, count: 1 };
+                        else seen[p.name].count++;
+                    });
+                    return 'Active Zabbix Problems:\n' + Object.values(seen).map(p => {
+                        const sev = ['info','info','warning','average','high','critical'][parseInt(p.severity)] || 'info';
+                        const cnt = p.count > 1 ? ` (\u00d7${p.count})` : '';
+                        return `[${sev}] ${p.name}${cnt}`;
+                    }).join('\n');
+                }
+                default: return '';
+            }
         }
 
         function renderMetrics(rows) {
@@ -778,6 +1049,68 @@
                 insufficient_data: 'Insufficient Data',
             };
             return labels[v] || v;
+        }
+
+        async function submitFeedback(accurate) {
+            if (!lastDiagData) return;
+            const d = lastDiagData;
+            const v = d.verdict;
+            const a = d.assessment || {};
+            const wx = d.weather || {};
+
+            const fbYes = document.getElementById('fb-yes');
+            const fbNo = document.getElementById('fb-no');
+            fbYes.disabled = true;
+            fbNo.disabled = true;
+
+            try {
+                const resp = await fetch('/api/feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        hostname: d.hostname,
+                        verdict: v.verdict,
+                        confidence: v.confidence,
+                        severity: v.severity,
+                        accurate: accurate,
+                        band_ghz: d.link_info?.band_ghz || null,
+                        off_target_db: a.off_target_db ?? null,
+                        baseline_delta: a.baseline_delta_db ?? null,
+                        rain_rate: wx.rain_rate_mm_hr ?? null,
+                    }),
+                });
+                const result = await resp.json();
+
+                // Already reported — tell the user
+                if (result.already_reported) {
+                    fbYes.disabled = true;
+                    fbNo.disabled = true;
+                    fbYes.textContent = 'Already reported';
+                    fbNo.style.display = 'none';
+                    fbYes.className = 'fb-btn';
+                    return;
+                }
+
+                // Highlight the selected button
+                if (accurate) {
+                    fbYes.className = 'fb-btn selected-yes';
+                    fbYes.textContent = 'Yes — Thanks!';
+                } else {
+                    fbNo.className = 'fb-btn selected-no';
+                    fbNo.textContent = 'No — Noted';
+                }
+
+                // Update accuracy badge with fresh stats
+                const badge = document.getElementById('accuracy-badge');
+                const s = result.accuracy;
+                if (s && s.total > 0) {
+                    badge.innerHTML = `Historically <span>${s.accuracy_pct}%</span> accurate (${s.total} report${s.total !== 1 ? 's' : ''})`;
+                }
+            } catch (e) {
+                fbYes.disabled = false;
+                fbNo.disabled = false;
+                alert('Failed to save feedback: ' + e.message);
+            }
         }
     </script>
 </body>

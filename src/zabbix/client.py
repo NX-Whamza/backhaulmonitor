@@ -406,12 +406,13 @@ class ZabbixClient:
         return None
 
     async def search_by_tower(self, tower: str) -> list[dict]:
-        """Search for BH hosts at a tower by tag."""
+        """Search for BH hosts at a tower by tag (contains match)."""
         hosts = await self.jsonrpc("host.get", {
-            "tags": [{"tag": "tower", "value": tower, "operator": 1}],
+            "tags": [{"tag": "tower", "value": tower, "operator": 0}],
             "output": ["hostid", "host", "name"],
             "selectTags": "extend",
-            "limit": 100,
+            "selectInterfaces": ["ip"],
+            "limit": 50,
         }) or []
         # Filter to BH- devices only
         return [h for h in hosts if h.get("host", "").upper().startswith("BH-")]
