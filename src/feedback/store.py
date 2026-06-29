@@ -43,7 +43,7 @@ def init_db() -> None:
 
 
 def check_recent_feedback(
-    hostname: str, verdict: str, window_seconds: int = 3600,
+    hostname: str, verdict: str, window_seconds: int = 86400,
 ) -> Optional[dict[str, Any]]:
     """Check if feedback was already submitted for this hostname + verdict recently.
 
