@@ -41,15 +41,29 @@ def estimate_rain_attenuation(band_ghz: int, rain_rate_mm_hr: float) -> float:
     return round(ref * (rain_rate_mm_hr / 25.0), 2)
 
 
-def calc_off_target(pcn: dict, rf_snapshot: dict) -> Optional[float]:
+def _get_tx_power(rf_snapshot: dict, far_end_rf: Optional[dict] = None) -> Optional[float]:
+    """Get TX power — near-end first, fall back to far-end for XPIC configs
+    where the near-end active carriers don't report TX power."""
+    tx = rf_snapshot.get("txpower")
+    if tx is not None:
+        return tx
+    if far_end_rf:
+        return far_end_rf.get("txpower")
+    return None
+
+
+def calc_off_target(
+    pcn: dict, rf_snapshot: dict, far_end_rf: Optional[dict] = None,
+) -> Optional[float]:
     """Calculate off-target dB using Grafana BH dashboard formula.
 
     Formula: OFFTARGET = (zab_power - coordPower) + rxmaxPower - zab_rsl
 
     This adjusts the FCC coordinated RSL for actual TX power and compares
     against current RSL. Positive = link below designed target (degraded).
+    For XPIC, falls back to far-end TX power when near-end doesn't have it.
     """
-    zab_power = rf_snapshot.get("txpower")
+    zab_power = _get_tx_power(rf_snapshot, far_end_rf)
     zab_rsl = rf_snapshot.get("rsl")
     coord_power = pcn.get("coordPower1(dBm)")
     rx_max_power = pcn.get("rxmaxPower1(dBm)")
@@ -119,6 +133,7 @@ def build_link_assessment(
     weather: Optional[dict],
     band_ghz: Optional[int] = None,
     distance_mi: Optional[float] = None,
+    far_end_rf: Optional[dict] = None,
 ) -> dict[str, Any]:
     """Build a comprehensive link health assessment.
 
@@ -129,7 +144,7 @@ def build_link_assessment(
 
     # Off-target from PCN (Grafana formula)
     if pcn:
-        assessment["off_target_db"] = calc_off_target(pcn, rf_snapshot)
+        assessment["off_target_db"] = calc_off_target(pcn, rf_snapshot, far_end_rf)
         assessment["fade_margin_db"] = calc_fade_margin(pcn, rf_snapshot)
         assessment["pcn_rx_coord"] = pcn.get("rxcoordPower1(dBm)")
         assessment["pcn_coord_power"] = pcn.get("coordPower1(dBm)")
@@ -143,10 +158,11 @@ def build_link_assessment(
     assessment["baseline_delta_db"] = calc_baseline_delta(rf_snapshot, baseline)
 
     # Adjusted expected RSL — coord RSL corrected for actual TX power
+    # For XPIC, falls back to far-end TX power when near-end doesn't have it
     if pcn:
         coord_power = pcn.get("coordPower1(dBm)")
         rx_coord = pcn.get("rxcoordPower1(dBm)")
-        tx_power = rf_snapshot.get("txpower")
+        tx_power = _get_tx_power(rf_snapshot, far_end_rf)
         if all(v is not None for v in [coord_power, rx_coord, tx_power]):
             adjusted = round(rx_coord + (tx_power - coord_power), 1)
             assessment["adjusted_expected_rsl"] = adjusted

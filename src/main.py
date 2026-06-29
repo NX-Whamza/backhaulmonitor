@@ -542,6 +542,7 @@ async def api_diagnose(
         weather=weather_data,
         band_ghz=band_ghz,
         distance_mi=distance_mi,
+        far_end_rf=far_end_rf if isinstance(far_end_rf, dict) else None,
     )
 
     # Run diagnosis
