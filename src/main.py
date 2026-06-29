@@ -509,6 +509,13 @@ async def api_diagnose(
     snmp_down = _snmp_is_down(problems)
     rf_snapshot = _sanitize_rf(rf_snapshot, snmp_down)
 
+    # Retry PCN once if it failed for a licensed link (transient SMAP timeout)
+    if pcn is None and band_ghz and band_ghz != 5:
+        try:
+            pcn = await catalog.get_pcn(hostname, tower_a, tower_z)
+        except Exception:
+            pass
+
     # Validate PCN data — discard if it doesn't belong to this link
     pcn = _validate_pcn(pcn, band_ghz, link_info)
 

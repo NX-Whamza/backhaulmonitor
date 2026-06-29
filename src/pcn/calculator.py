@@ -189,6 +189,8 @@ class CatalogClient:
             headers["Authorization"] = settings.smap_auth_header
         self._client = httpx.AsyncClient(timeout=8.0, headers=headers)
         self._req_id = 0
+        self._pcn_cache: dict[str, dict] = {}
+        self._coords_cache: dict[str, dict] = {}
 
     async def _call_tool(self, tool_name: str, arguments: dict) -> Optional[dict]:
         """Call a codexCatalog MCP tool and return parsed result."""
@@ -219,15 +221,26 @@ class CatalogClient:
             return None
 
     async def get_pcn(self, hostname: str, tower_a: str = "", tower_z: str = "") -> Optional[dict]:
-        """Query SMAP bh_report_history for PCN designed values."""
+        """Query SMAP bh_report_history for PCN designed values.
+
+        Results are cached in memory — FCC coordination data doesn't change.
+        """
+        cache_key = f"{hostname}|{tower_a}|{tower_z}"
+        if cache_key in self._pcn_cache:
+            return self._pcn_cache[cache_key]
+
         import asyncio
         try:
-            return await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 self._get_pcn_inner(hostname, tower_a, tower_z),
                 timeout=15.0,
             )
         except asyncio.TimeoutError:
-            return None
+            result = None
+
+        if result is not None:
+            self._pcn_cache[cache_key] = result
+        return result
 
     async def _get_pcn_inner(self, hostname: str, tower_a: str, tower_z: str) -> Optional[dict]:
         """PCN lookup strategy (catalog has query restrictions on text columns):
@@ -549,7 +562,10 @@ class CatalogClient:
         return False
 
     async def get_tower_coords(self, tower: str) -> Optional[dict]:
-        """Get tower lat/lon from SMAP tower data."""
+        """Get tower lat/lon from SMAP tower data. Cached in memory."""
+        if tower in self._coords_cache:
+            return self._coords_cache[tower]
+
         data = await self._call_tool("smap__get_tower", {
             "repo_path": "nextlink",
             "source_name": "smap",
@@ -564,7 +580,9 @@ class CatalogClient:
         lat = t.get("lat")
         lon = t.get("long") or t.get("lon")
         if lat and lon:
-            return {"lat": float(lat), "lon": float(lon)}
+            result = {"lat": float(lat), "lon": float(lon)}
+            self._coords_cache[tower] = result
+            return result
         return None
 
     @staticmethod
