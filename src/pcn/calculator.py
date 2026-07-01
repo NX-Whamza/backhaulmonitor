@@ -203,7 +203,10 @@ class CatalogClient:
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
         if settings.smap_auth_header:
             headers["Authorization"] = settings.smap_auth_header
-        self._client = httpx.AsyncClient(timeout=8.0, headers=headers)
+        # SMAP MCP gateway carries a large fixed per-request overhead (server-side
+        # query is ~sub-100ms, but wire time is consistently 8-13s). An 8s timeout
+        # silently killed every PCN and tower-coord call, blanking both cards.
+        self._client = httpx.AsyncClient(timeout=25.0, headers=headers)
         self._req_id = 0
         self._pcn_cache: dict[str, dict] = {}
         self._coords_cache: dict[str, dict] = {}
@@ -249,7 +252,7 @@ class CatalogClient:
         try:
             result = await asyncio.wait_for(
                 self._get_pcn_inner(hostname, tower_a, tower_z),
-                timeout=15.0,
+                timeout=30.0,
             )
         except asyncio.TimeoutError:
             result = None
@@ -549,12 +552,22 @@ class CatalogClient:
         #   1. Exact match
         #   2. Substring either way  (HOHQ ↔ TX-HOHQ2)
         #   3. Long common prefix    (TX-WEATHERFORD-REVER ↔ TX-WEATHERFORD-FX-REVERE)
+        # When both towers reduce to the same stripped stem (co-located sectors
+        # like NE-WAYNE-SW-1 / NE-WAYNE-NW-2 → both "NE-WAYNE"), the shared
+        # variants can't discriminate the endpoints. Drop them from the pair
+        # check so matching relies on the directional variants that differ.
+        ambiguous = {v.upper() for v in ta_variants} & {v.upper() for v in tz_variants}
+        ta_match = [v for v in ta_variants if v.upper() not in ambiguous]
+        tz_match = [v for v in tz_variants if v.upper() not in ambiguous]
+
         for rd in all_rows:
             s1 = (rd.get("site1") or "").upper()
             s2 = (rd.get("site2") or "").upper()
-            a_match = self._tower_matches(s1, ta_variants) or self._tower_matches(s2, ta_variants)
-            b_match = self._tower_matches(s1, tz_variants) or self._tower_matches(s2, tz_variants)
-            if a_match and b_match:
+            # A valid pair matches one tower on site1 and the OTHER on site2.
+            # Requiring distinct columns prevents a single site (e.g. a shared
+            # tower) from satisfying both ends and returning a different link.
+            if ((self._tower_matches(s1, ta_match) and self._tower_matches(s2, tz_match)) or
+                (self._tower_matches(s2, ta_match) and self._tower_matches(s1, tz_match))):
                 return rd
         return None
 
