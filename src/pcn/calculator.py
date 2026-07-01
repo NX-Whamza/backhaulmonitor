@@ -55,23 +55,24 @@ def _get_tx_power(rf_snapshot: dict, far_end_rf: Optional[dict] = None) -> Optio
 def calc_off_target(
     pcn: dict, rf_snapshot: dict, far_end_rf: Optional[dict] = None,
 ) -> Optional[float]:
-    """Calculate off-target dB using Grafana BH dashboard formula.
+    """Calculate off-target dB: expected RSL vs current RSL.
 
-    Formula: OFFTARGET = (zab_power - coordPower) + rxmaxPower - zab_rsl
+    Formula: OFFTARGET = rxcoordPower + (tx_power - coordPower) - current_rsl
 
-    This adjusts the FCC coordinated RSL for actual TX power and compares
-    against current RSL. Positive = link below designed target (degraded).
+    Computes the expected RSL at actual TX power and compares against the
+    current RSL. Positive = link below designed target (degraded).
     For XPIC, falls back to far-end TX power when near-end doesn't have it.
     """
-    zab_power = _get_tx_power(rf_snapshot, far_end_rf)
-    zab_rsl = rf_snapshot.get("rsl")
+    tx_power = _get_tx_power(rf_snapshot, far_end_rf)
+    current_rsl = rf_snapshot.get("rsl")
     coord_power = pcn.get("coordPower1(dBm)")
-    rx_max_power = pcn.get("rxmaxPower1(dBm)")
+    rx_coord_power = pcn.get("rxcoordPower1(dBm)")
 
-    if any(v is None for v in [zab_power, zab_rsl, coord_power, rx_max_power]):
+    if any(v is None for v in [tx_power, current_rsl, coord_power, rx_coord_power]):
         return None
 
-    return round((zab_power - coord_power) + rx_max_power - zab_rsl, 1)
+    expected_rsl = rx_coord_power + (tx_power - coord_power)
+    return round(expected_rsl - current_rsl, 1)
 
 
 def calc_baseline_delta(rf_snapshot: dict, baseline: Optional[dict]) -> Optional[float]:

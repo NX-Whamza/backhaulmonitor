@@ -629,16 +629,8 @@
             const pcn = data.pcn || {};
             const a = data.assessment || {};
             const bl = data.baseline || {};
-            const offTargetCls = a.off_target_db != null ? (a.off_target_db > 3 ? 'bad' : a.off_target_db > 1 ? 'warn' : 'good') : '';
+            const offTargetCls = a.off_target_db != null ? (a.off_target_db >= 3 ? 'bad' : a.off_target_db > 1 ? 'warn' : 'good') : '';
             const hasPcn = Object.keys(pcn).length > 0;
-
-            const blDelta = a.baseline_delta_db;
-            const blWithin = blDelta != null && Math.abs(blDelta) <= 2;
-            const blFlag = blDelta != null && Math.abs(blDelta) >= 3;
-            const blDeltaCls = blDelta != null ? (blFlag ? 'bad' : blWithin ? 'good' : 'warn') : '';
-            const blDeltaLabel = blDelta != null
-                ? (blWithin ? 'Within tolerance' : blFlag ? 'Outside tolerance' : '')
-                : '';
 
             let pcnRows = [];
 
@@ -650,17 +642,16 @@
             pcnRows.push(
                 ['Current RSL', formatDb(a.current_rsl)],
                 ['7-Day Avg RSL (Zabbix)', formatDb(bl.baseline), bl.baseline != null ? 'good' : ''],
-                ['Δ Baseline', blDelta != null ? (blDelta > 0 ? '+' : '') + blDelta.toFixed(1) + ' dB — ' + blDeltaLabel : 'N/A', blDeltaCls],
-                ['Tolerance', '±2 dB'],
             );
 
             if (hasPcn && a.off_target_db != null) {
-                const insertIdx = pcnRows.findIndex(r => r[0] === 'Δ Baseline');
-                pcnRows.splice(insertIdx, 0,
-                    [a.off_target_db != null && Math.abs(a.off_target_db) <= 3 ? 'On-Target (PCN)' : 'Off-Target (PCN)',
+                pcnRows.push(
+                    [Math.abs(a.off_target_db) < 3 ? 'On-Target (PCN)' : 'Off-Target (PCN)',
                      (a.off_target_db > 0 ? '+' : '') + a.off_target_db.toFixed(1) + ' dB', offTargetCls],
                 );
             }
+
+            pcnRows.push(['Tolerance', '±2 dB']);
 
             // Per-carrier RSL spread for multi-carrier links
             if (rf.all_radios && rf.all_radios.length > 1) {
@@ -885,9 +876,9 @@
                 }
                 case 'pcn': {
                     let l = ['Link Design / Baseline:'];
-                    l.push(`Current RSL: ${fmtD(a.current_rsl)} dB | 7d Avg: ${fmtD(bl.baseline)} dB (\u0394 ${fmtDelta(a.baseline_delta_db)} dB)`);
+                    l.push(`Current RSL: ${fmtD(a.current_rsl)} dB | 7d Avg: ${fmtD(bl.baseline)} dB`);
                     if (a.off_target_db != null) {
-                        const label = Math.abs(a.off_target_db) <= 3 ? 'On-target' : 'Off-target';
+                        const label = Math.abs(a.off_target_db) < 3 ? 'On-target' : 'Off-target';
                         l.push(`${label} (PCN): ${fmtDelta(a.off_target_db)} dB | Fade Margin: ${fmtD(a.fade_margin_db)} dB`);
                     }
                     if (Object.keys(pcn).length > 0) {
@@ -1028,10 +1019,10 @@
             const fmtDelta = (v) => v != null ? (v > 0 ? '+' : '') + v.toFixed(1) : '?';
             let designLine = `Current RSL: ${a.current_rsl != null ? a.current_rsl.toFixed(1) : '?'} dBm`;
             if (a.off_target_db != null) {
-                const otLabel = Math.abs(a.off_target_db) <= 3 ? 'On-target' : 'Off-target';
+                const otLabel = Math.abs(a.off_target_db) < 3 ? 'On-target' : 'Off-target';
                 designLine += ` | ${otLabel} (PCN): ${fmtDelta(a.off_target_db)} dB`;
             }
-            designLine += ` | Zabbix 7d: ${bl.baseline != null ? bl.baseline.toFixed(1) : '?'} dBm (Δ ${fmtDelta(a.baseline_delta_db)} dB, ±${bl.stddev || '?'})`;
+            designLine += ` | Zabbix 7d: ${bl.baseline != null ? bl.baseline.toFixed(1) : '?'} dBm`;
             lines.push(designLine);
 
             // Weather — if current or recent rain
@@ -1120,6 +1111,16 @@
                 if (s && s.total > 0) {
                     badge.innerHTML = `Historically <span>${s.accuracy_pct}%</span> accurate (${s.total} report${s.total !== 1 ? 's' : ''})`;
                 }
+
+                // Re-fetch diagnosis so blended confidence/severity updates
+                try {
+                    const refreshResp = await fetch(`/api/diagnose/${encodeURIComponent(d.hostname)}`);
+                    const refreshed = await refreshResp.json();
+                    const rv = refreshed.verdict;
+                    document.getElementById('verdict-confidence').textContent =
+                        `Confidence: ${rv.confidence}% | Severity: ${rv.severity}`;
+                    lastDiagData = refreshed;
+                } catch (_) { /* diagnosis refresh is best-effort */ }
             } catch (e) {
                 fbYes.disabled = false;
                 fbNo.disabled = false;

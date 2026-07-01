@@ -97,15 +97,21 @@ def diagnose_link(
             )
 
     # ── Check 2: Off-target from PCN design ─────────────────────────────
+    off_target = None
     if pcn:
         off_target = calc_off_target(pcn, rf_snapshot)
         if off_target is not None:
-            if abs(off_target) <= 3.0:
+            if abs(off_target) <= 2.0:
                 scores[VERDICT_NORMAL] += 30
-                findings.append(f"On-target: {off_target:+.1f} dB from PCN design (within ±3 dB)")
-            elif off_target > 3.0:
-                scores[VERDICT_OFF_TARGET] += 30 + min(off_target * 2, 30)
+                findings.append(f"On-target: {off_target:+.1f} dB from PCN design (within ±2 dB)")
+            elif off_target >= 3.0:
+                scores[VERDICT_OFF_TARGET] += 45 + min(off_target * 3, 30)
                 findings.append(f"Off-target: {off_target:+.1f} dB below PCN design")
+            elif off_target > 2.0:
+                # 2.0–2.9 dB is still acceptable; 3.0 dB and above is off-target.
+                # Flag it to watch for drift, but the verdict stays normal.
+                scores[VERDICT_NORMAL] += 20
+                findings.append(f"Marginal: {off_target:+.1f} dB from PCN design (under 3 dB — watch for drift)")
             else:
                 findings.append(f"Running hot: {off_target:+.1f} dB above PCN design (unusual)")
                 scores[VERDICT_ALIGNMENT] += 10
@@ -114,8 +120,13 @@ def diagnose_link(
     baseline_delta = calc_baseline_delta(rf_snapshot, baseline)
     if baseline_delta is not None:
         if abs(baseline_delta) <= 2.0:
-            scores[VERDICT_NORMAL] += 20
-            findings.append(f"Zabbix baseline stable: {baseline_delta:+.1f} dB from 7d median")
+            # Stable baseline only counts as "normal" if the link is on-target;
+            # being consistently off-target is not healthy
+            if off_target is not None and off_target >= 3.0:
+                findings.append(f"Zabbix baseline stable: {baseline_delta:+.1f} dB from 7d median — consistently off-target")
+            else:
+                scores[VERDICT_NORMAL] += 20
+                findings.append(f"Zabbix baseline stable: {baseline_delta:+.1f} dB from 7d median")
         elif baseline_delta >= 3.0:
             if scores[VERDICT_RAIN_FADE] > 0:
                 scores[VERDICT_RAIN_FADE] += 20
@@ -168,7 +179,7 @@ def diagnose_link(
     total = sum(scores.values()) or 1
     confidence = min(round(best_score / total * 100), 100)
 
-    severity = _classify_severity(rf_snapshot, baseline, mod, snmp_down, far_end_rf)
+    severity = _classify_severity(rf_snapshot, baseline, mod, snmp_down, far_end_rf, off_target)
     recommendations = _get_recommendations(best_verdict, findings, mod, snmp_down)
 
     return {
@@ -187,6 +198,7 @@ def _classify_severity(
     mod: Optional[dict],
     snmp_down: bool = False,
     far_end_rf: Optional[dict] = None,
+    off_target: Optional[float] = None,
 ) -> str:
     """Classify severity: normal, minor, moderate, severe, critical."""
     rsl = rf_snapshot.get("rsl")
@@ -200,7 +212,9 @@ def _classify_severity(
         return "unknown"
 
     if baseline:
-        delta = abs(rsl - baseline.get("baseline", rsl))
+        # Only degradation (current RSL weaker than the 7-day median) raises
+        # severity — running stronger than baseline is not a problem.
+        delta = max(0.0, baseline.get("baseline", rsl) - rsl)
     else:
         delta = 0
 
@@ -210,6 +224,13 @@ def _classify_severity(
             return "critical"
         if mod["margin_pct"] <= 25:
             return "severe"
+
+    # Off-target from PCN design affects severity — 3 dB boundary, matching the
+    # verdict classification. 2–3 dB is marginal and stays low-severity.
+    if off_target is not None and off_target >= 3.0:
+        if off_target > 6.0:
+            return "moderate"
+        return "minor"
 
     if delta <= 2:
         return "normal"
